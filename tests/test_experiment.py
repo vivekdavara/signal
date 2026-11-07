@@ -118,6 +118,28 @@ def test_a_tie_on_validation_goes_to_the_first_grid_row(prepared: Prepared) -> N
     rows = result["validation"]["item-knn"]
     assert rows[0]["ndcg@10"] == rows[1]["ndcg@10"]
     assert result["chosen"]["item-knn"] == {"k": 5000, "shrink": 0.0}
+    # An identical row's paired interval is [0, 0], which reaches 0: indistinguishable.
+    key = "validation rows indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)"
+    assert result[key] == [{"k": 9000, "shrink": 0.0}]
+
+
+def test_each_rows_interval_is_for_chosen_minus_that_row(prepared: Prepared) -> None:
+    # Recomputed independently: each row's per-user validation NDCG@10, then the paired interval (chosen - row). An
+    # interval for (row - chosen) would be the mirror image, so the comparison is exact, not "brackets the mean".
+    result = experiment.run(prepared, GRID)
+    history = prepared.history(include_val=False)
+    per_user = {}
+    for k, shrink in GRID:
+        model = ItemKNN(k=k, shrink=shrink)
+        model.fit(history)
+        per_user[(k, shrink)] = ev.ndcg_at(ev.evaluate(model, history, prepared.val_items, "val").ranks, 10)
+    chosen = result["chosen"]["item-knn"]
+    best = per_user[(chosen["k"], chosen["shrink"])]
+    rows = result["validation"]["item-knn"]
+    assert len({r["ndcg@10"] for r in rows}) > 1  # otherwise a mirrored interval could equal the right one
+    for row in rows:
+        want = ev.paired_bootstrap_ci(best, per_user[(row["k"], row["shrink"])], seed=experiment.SEED)
+        assert tuple(row[experiment.DIAGNOSTIC]) == want
 
 
 def test_paired_differences_bracket_their_values(prepared: Prepared) -> None:

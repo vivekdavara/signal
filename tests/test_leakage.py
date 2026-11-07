@@ -7,6 +7,7 @@ import pytest
 
 from signalrec import evaluate as ev
 from signalrec import leakage, movielens, prepare, synthetic
+from signalrec.baselines import Popularity
 from signalrec.prepare import Prepared
 
 
@@ -64,3 +65,52 @@ def test_the_report_names_its_numbers(prepared: Prepared) -> None:
     low, high = cell["difference ci95"]
     assert low <= cell["difference"] <= high
     assert 0 <= report["training positives later than the user's test item"]["mean share"] <= 1
+
+
+def four_users() -> Prepared:
+    # Training positives at t = 1, 4, 7, 10 (one per user). Test times 3, 6, 11, 12, so the share of training
+    # positives later than each user's test item is 3/4, 2/4, 0 and 0: mean 0.3125, median 0.25, two users with any,
+    # one with over half (and one with exactly half, which is not over).
+    def a(values: list[int]) -> np.ndarray:
+        return np.array(values, dtype=np.int64)
+
+    return Prepared(
+        train_users=a([0, 1, 2, 3]),
+        train_items=a([0, 1, 2, 3]),
+        train_times=a([1, 4, 7, 10]),
+        val_items=a([1, 2, 3, 0]),
+        val_times=a([2, 5, 8, 11]),
+        test_items=a([2, 3, 0, 1]),
+        test_times=a([3, 6, 11, 12]),
+        user_raw_ids=a([1, 2, 3, 4]),
+        item_raw_ids=a([1, 2, 3, 4]),
+        titles=("a", "b", "c", "d"),
+        genres=((), (), (), ()),
+    )
+
+
+def test_the_share_summary_by_hand() -> None:
+    p = four_users()
+    assert leakage.future_share(p).tolist() == [0.75, 0.5, 0.0, 0.0]
+    assert leakage.run(p)["training positives later than the user's test item"] == {
+        "mean share": 0.3125,
+        "median share": 0.25,
+        "users with any": 0.5,
+        "users with over half": 0.25,
+    }
+
+
+def test_global_and_as_of_are_the_right_way_round(prepared: Prepared) -> None:
+    report = leakage.run(prepared)["popularity, global minus as of test time (paired)"]
+    history = prepared.history(include_val=True)
+    model = Popularity()
+    model.fit(history)
+    leaky = ev.evaluate(model, history, prepared.test_items, "test").ranks
+    as_of = leakage.popularity_as_of(prepared)
+    assert not np.array_equal(leaky, as_of)  # otherwise a swap couldn't show
+    for name, fn, k in (("ndcg@10", ev.ndcg_at, 10), ("recall@50", ev.recall_at, 50)):
+        cell = report[name]
+        assert cell["global (leaky)"] == fn(leaky, k).mean()
+        assert cell["as of test time"] == fn(as_of, k).mean()
+        want = ev.paired_bootstrap_ci(fn(leaky, k), fn(as_of, k), seed=leakage.SEED)
+        assert tuple(cell["difference ci95"]) == want

@@ -74,3 +74,9 @@ def test_the_recommend_command(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "item-knn (k=3, shrink=10): top 10" in capsys.readouterr().out
     assert cli.main(["recommend", "synthetic", "--data-dir", str(tmp_path), "--user", "100000"]) == 1
     assert "not in the prepared data" in capsys.readouterr().err
+
+
+def test_a_list_longer_than_the_unseen_movies_is_cut_not_padded() -> None:
+    # User 0 has seen movies 0 and 1 of five: only three are left, and -1 padding must never become titles[-1].
+    assert recommend.recommend(small(), Popularity(), 0, 10) == [2, 3, 4]
+    assert recommend.describe(small(), Popularity(), 10, k=10).count("Epsilon (1994)") == 1

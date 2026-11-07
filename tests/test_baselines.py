@@ -163,3 +163,8 @@ def test_neighbours_agree_with_the_plain_float_definition(x: np.ndarray, k: int,
         if len(ranked) > k and abs(ranked[k - 1][1] - ranked[k][1]) < 1e-9:
             continue
         assert set(np.flatnonzero(s[j]).tolist()) == {i for i, _ in ranked[:k]}
+
+
+def test_item_knn_refuses_a_zero_block_when_built() -> None:
+    with pytest.raises(ValueError, match="item-kNN needs"):
+        ItemKNN(k=5, block=0)

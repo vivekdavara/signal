@@ -334,3 +334,34 @@ def test_load_checks_the_manifest_against_the_arrays_and_the_dataset(
     path.write_text(json.dumps(manifest))
     with pytest.raises(PrepareError, match="disagree with the arrays"):
         prepare.load(tmp_path / "out")
+
+
+def test_a_failed_delete_of_the_old_copy_does_not_fail_the_save(
+    tmp_path: Path, synthetic_prepared: prepare.Prepared
+) -> None:
+    # A read-only subdirectory in the old copy makes deleting it fail after the swap; the new data is in place by
+    # then, so the save must succeed (the old copy stays behind under its hidden name).
+    out = tmp_path / "out"
+    prepare.save(synthetic_prepared, out, "first", {}, Params())
+    locked = out / "locked"
+    locked.mkdir()
+    (locked / "file").write_text("x")
+    locked.chmod(0o500)
+    try:
+        prepare.save(synthetic_prepared, out, "second", {}, Params())
+        assert prepare.read_manifest(out)["dataset"] == "second"
+        leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".out-old-")]
+        assert len(leftovers) == 1
+    finally:
+        for p in tmp_path.rglob("locked"):
+            p.chmod(0o700)
+
+
+def test_sources_must_map_names_to_hashes(tmp_path: Path, synthetic_prepared: prepare.Prepared) -> None:
+    prepare.save(synthetic_prepared, tmp_path / "out", "synthetic", {"ratings.csv": "ab"}, Params())
+    path = tmp_path / "out" / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["sources"]["ratings.csv"] = 5
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(PrepareError, match="sources"):
+        prepare.load(tmp_path / "out")

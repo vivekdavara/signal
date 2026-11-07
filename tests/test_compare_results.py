@@ -43,10 +43,11 @@ def test_timings_are_ignored_and_small_metric_moves_pass() -> None:
 @pytest.mark.parametrize(
     ("path", "value", "message"),
     [
-        (("test", "item-knn", "ndcg@10", "value"), 0.04, "test item-knn ndcg@10: committed 0.0300, fresh 0.0400"),
-        (("chosen", "item-knn", "k"), 25, "chosen:"),
-        (("prepared", "counts", "users"), 600, "prepared:"),
+        (("test", "item-knn", "ndcg@10", "value"), 0.04, "test.item-knn.ndcg@10.value: committed 0.0300, fresh 0.0400"),
+        (("chosen", "item-knn", "k"), 25, "chosen.item-knn.k: committed 10, fresh 25"),
+        (("prepared", "counts", "users"), 600, "prepared.counts.users:"),
         (("items",), 1954, "items:"),
+        (("test", "item-knn", "ndcg@10", "ci95"), [0.02, 0.05], "test.item-knn.ndcg@10.ci95[1]:"),
     ],
 )
 def test_differences_are_reported(path: tuple[str, ...], value: object, message: str) -> None:
@@ -88,4 +89,28 @@ def test_leakage_results_are_compared_by_their_own_fields() -> None:
     fresh[compare_results.SHARES]["mean share"] = 0.6
     fresh["users"] = 600
     problems = compare_results.compare(leakage_result(), fresh)
-    assert sorted(p.split(":")[0] for p in problems) == ["mean share", "ndcg@10 as of test time", "users"]
+    assert sorted(p.split(":")[0] for p in problems) == [
+        f"{compare_results.LEAKAGE}.ndcg@10.as of test time",
+        f"{compare_results.SHARES}.mean share",
+        "users",
+    ]
+
+
+def test_the_tolerance_is_inclusive_and_two_sided() -> None:
+    # Powers of two keep the boundary exact in binary floating point.
+    assert compare_results.compare(0.5, 0.5 + 2**-8, tolerance=2**-8) == []
+    assert compare_results.compare(0.5, 0.5 - 2**-8, tolerance=2**-8) == []
+    assert compare_results.compare(0.5, 0.5 + 2**-7, tolerance=2**-8) != []
+    assert compare_results.compare(0.5, 0.5 - 2**-7, tolerance=2**-8) != []
+
+
+def test_skipped_keys_are_only_the_machine_dependent_ones() -> None:
+    assert {"command", "environment", "fit_seconds", "eval_seconds"} == compare_results.SKIPPED
+    a = {"environment": {"numpy": "2.4.6"}, "command": "x", "users": 1}
+    b = {"environment": {"numpy": "2.5.0"}, "command": "y", "users": 1}
+    assert compare_results.compare(a, b) == []
+
+
+def test_a_list_of_another_length_is_reported_not_raised() -> None:
+    problems = compare_results.compare({"ci95": [0.1, 0.2]}, {"ci95": [0.1]})
+    assert problems == ["ci95: committed [0.1, 0.2], fresh [0.1]"]

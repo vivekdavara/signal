@@ -1,62 +1,71 @@
-"""Compare a fresh baselines.json or leakage.json with the committed one: CI's regression check on the real
-ml-latest-small.
-
-The processed data must match exactly (counts, parameters, source hashes) and so must item-kNN's chosen parameters.
-Each test metric must be within TOLERANCE: item-kNN sums float32 similarities, and a different CPU or SciPy build can
-round a near-tie the other way, which moves one user's rank. One user is 1/601 = 0.0017 of a metric on
-ml-latest-small, so the tolerance allows about three such users.
+"""Compare a fresh results document (baselines.json or leakage.json) with the committed one: CI's regression check
+on the real ml-latest-small.
 
     python scripts/compare_results.py results/ml-latest-small/baselines.json fresh.json
     python scripts/compare_results.py results/ml-latest-small/leakage.json fresh-leakage.json
+
+The whole document is compared, recursively: both must have the same keys at every level (a key on either side only
+is a difference), lists the same length, strings and booleans equal, integers equal and of type int (601.0 is not a
+count), and every other number finite and within TOLERANCE. Only what is expected to differ between machines is
+skipped: timings, the command line and the library versions.
+
+Why a tolerance: item-kNN's scores are exact integers, but the bootstrap and the metrics are float means, and another
+CPU or NumPy build may round a last bit differently. One user is 1/601 = 0.0017 of a metric on ml-latest-small, so
+0.005 allows about three users' worth of movement and nothing more.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
 
 TOLERANCE = 0.005
-
-
+SKIPPED = frozenset({"command", "environment", "fit_seconds", "eval_seconds"})
+# Two keys of a leakage.json, named for the tests that build one.
 LEAKAGE = "popularity, global minus as of test time (paired)"
 SHARES = "training positives later than the user's test item"
 
 
-def compare_leakage(committed: dict[str, Any], fresh: dict[str, Any], tolerance: float = TOLERANCE) -> list[str]:
-    """A leakage.json: the users exactly; the shares and each metric's three values within the tolerance."""
-    problems = []
-    for key in ("dataset", "users"):
-        if committed[key] != fresh[key]:
-            problems.append(f"{key}: committed {committed[key]!r}, fresh {fresh[key]!r}")
-    for name, value in committed[SHARES].items():
-        if abs(fresh[SHARES][name] - value) > tolerance:
-            problems.append(f"{name}: committed {value:.4f}, fresh {fresh[SHARES][name]:.4f}")
-    for metric, cell in committed[LEAKAGE].items():
-        for name in ("global (leaky)", "as of test time", "difference"):
-            got = fresh[LEAKAGE][metric][name]
-            if abs(got - cell[name]) > tolerance:
-                problems.append(f"{metric} {name}: committed {cell[name]:.4f}, fresh {got:.4f}")
-    return problems
+def _show(value: Any) -> str:
+    return f"{value:.4f}" if type(value) is float else repr(value)
 
 
-def compare(committed: dict[str, Any], fresh: dict[str, Any], tolerance: float = TOLERANCE) -> list[str]:
-    """A baselines.json, or a leakage.json (told apart by their keys)."""
-    if LEAKAGE in committed:
-        return compare_leakage(committed, fresh, tolerance)
-    problems = []
-    for key in ("dataset", "users", "items", "prepared", "chosen"):
-        if committed[key] != fresh[key]:
-            problems.append(f"{key}: committed {committed[key]!r}, fresh {fresh[key]!r}")
-    for model, metrics in committed["test"].items():
-        for metric, cell in metrics.items():
-            if not isinstance(cell, dict):
-                continue  # timings
-            got = fresh["test"][model][metric]["value"]
-            if abs(got - cell["value"]) > tolerance:
-                problems.append(f"test {model} {metric}: committed {cell['value']:.4f}, fresh {got:.4f}")
-    return problems
+def compare(committed: Any, fresh: Any, tolerance: float = TOLERANCE, path: str = "") -> list[str]:
+    """Every difference between two JSON values, each as "path: committed X, fresh Y"."""
+    where = path or "(document)"
+    if isinstance(committed, dict):
+        if not isinstance(fresh, dict):
+            return [f"{where}: committed an object, fresh {_show(fresh)}"]
+        problems = []
+        for key in sorted(set(committed) | set(fresh)):
+            if key in SKIPPED:
+                continue
+            sub = f"{path}.{key}" if path else key
+            if key not in fresh:
+                problems.append(f"{sub}: missing from the fresh document")
+            elif key not in committed:
+                problems.append(f"{sub}: only in the fresh document")
+            else:
+                problems += compare(committed[key], fresh[key], tolerance, sub)
+        return problems
+    if isinstance(committed, list):
+        if not isinstance(fresh, list) or len(fresh) != len(committed):
+            return [f"{where}: committed {_show(committed)}, fresh {_show(fresh)}"]
+        problems = []
+        for i, (a, b) in enumerate(zip(committed, fresh, strict=True)):
+            problems += compare(a, b, tolerance, f"{path}[{i}]")
+        return problems
+    if type(committed) is float:
+        if type(fresh) not in (int, float) or not (math.isfinite(committed) and math.isfinite(fresh)):
+            return [f"{where}: committed {_show(committed)}, fresh {_show(fresh)}"]
+        return [] if abs(fresh - committed) <= tolerance else [f"{where}: committed {committed:.4f}, fresh {fresh:.4f}"]
+    # int (not bool: type() is exact), bool, str, None: equal and of the same type.
+    if type(fresh) is not type(committed) or fresh != committed:
+        return [f"{where}: committed {_show(committed)}, fresh {_show(fresh)}"]
+    return []
 
 
 def main(argv: list[str]) -> int:

@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from signalrec import cli, experiment, movielens, prepare, synthetic
-from signalrec.baselines import Popularity
+from signalrec import evaluate as ev
+from signalrec.baselines import ItemKNN, Popularity
 from signalrec.prepare import Prepared
 
 GRID = ((5, 0.0), (20, 0.0), (20, 10.0))
@@ -95,3 +96,33 @@ def test_each_validation_row_is_compared_with_the_chosen_one(prepared: Prepared)
         for r in rows
         if {"k": r["k"], "shrink": r["shrink"]} in listed
     )
+
+
+def test_tuning_scores_the_validation_items_with_training_history(prepared: Prepared) -> None:
+    # Review round 1: tuning on the test items (else p.test_items) survived every test.
+    result = experiment.run(prepared, GRID)
+    history = prepared.history(include_val=False)
+    for row in result["validation"]["item-knn"]:
+        model = ItemKNN(k=row["k"], shrink=row["shrink"])
+        model.fit(history)
+        want = ev.evaluate(model, history, prepared.val_items, "val").summary()
+        assert {name: row[name] for name in want} == want
+    popularity = Popularity()
+    popularity.fit(history)
+    assert result["validation"]["popularity"] == ev.evaluate(popularity, history, prepared.val_items, "val").summary()
+
+
+def test_a_tie_on_validation_goes_to_the_first_grid_row(prepared: Prepared) -> None:
+    # k beyond the catalogue keeps every neighbour, so these two rows score identically.
+    result = experiment.run(prepared, ((5000, 0.0), (9000, 0.0)))
+    rows = result["validation"]["item-knn"]
+    assert rows[0]["ndcg@10"] == rows[1]["ndcg@10"]
+    assert result["chosen"]["item-knn"] == {"k": 5000, "shrink": 0.0}
+
+
+def test_paired_differences_bracket_their_values(prepared: Prepared) -> None:
+    result = experiment.run(prepared, GRID)
+    for cell in result["item-knn minus popularity (paired)"].values():
+        low, high = cell["ci95"]
+        assert low <= cell["value"] <= high
+    assert result["item-knn minus popularity (paired)"]["ndcg@10"]["value"] > 0  # so a sign swap can't pass

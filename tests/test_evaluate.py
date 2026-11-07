@@ -135,9 +135,45 @@ def test_bootstrap_intervals() -> None:
     values = (rng.random(2000) < 0.3).astype(np.float64)
     low, high = ev.bootstrap_ci(values)
     assert low < values.mean() < high
-    assert 0.02 < high - low < 0.06  # about 2 * 1.96 * sqrt(0.3 * 0.7 / 2000) = 0.040
+    # The normal approximation's 95% width is 2 * 1.96 * sqrt(p (1 - p) / n) = 0.0405 for this sample; a 90% interval
+    # (a wrong alpha, as in a review-round-1 survivor) would be 0.034.
+    expected = 2 * 1.96 * math.sqrt(values.mean() * (1 - values.mean()) / len(values))
+    assert abs((high - low) - expected) < 0.08 * expected
     assert ev.bootstrap_ci(values) == (low, high)
     lo_d, hi_d = ev.paired_bootstrap_ci(values, values)
     assert lo_d == hi_d == 0.0
     with pytest.raises(ValueError, match="same users"):
         ev.paired_bootstrap_ci(values, values[:10])
+
+
+def test_bootstrap_resamples_every_user() -> None:
+    # Only the last user has a 1: an interval that never draws the last index would be [0, 0].
+    values = np.zeros(100)
+    values[-1] = 1.0
+    assert ev.bootstrap_ci(values)[1] > 0
+
+
+def test_bootstrap_defaults_are_the_documented_ones() -> None:
+    values = np.random.default_rng(1).random(300)
+    assert ev.bootstrap_ci(values) == ev.bootstrap_ci(values, n_resamples=1000, seed=0, level=0.95)
+
+
+def test_paired_intervals_are_for_a_minus_b() -> None:
+    a = np.full(50, 0.5)
+    b = np.zeros(50)
+    b[:10] = 1.0
+    low, high = ev.paired_bootstrap_ci(a, b)
+    assert 0 < low <= 0.3 <= high
+
+
+def test_top_k_breaks_ties_by_index_past_insertion_sort_sizes() -> None:
+    # 40 equal scores: NumPy's default sort is only stable by accident below 16 elements (a review-round-1 survivor).
+    scores = np.zeros((1, 40))
+    assert ev.top_k(scores, csr(np.zeros((1, 40))), 30)[0].tolist() == list(range(30))
+
+
+def test_evaluate_checks_its_inputs() -> None:
+    with pytest.raises(ValueError, match="2 targets for 3 users"):
+        ev.evaluate(Fixed(np.zeros((3, 4))), csr(np.zeros((3, 4))), np.array([0, 1]), "val")
+    with pytest.raises(ValueError, match="non-finite"):
+        ev.ranks(np.array([[0.0, np.inf, 1.0]]), csr(np.zeros((1, 3))), np.array([1]))

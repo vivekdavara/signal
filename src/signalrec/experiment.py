@@ -22,7 +22,7 @@ from signalrec.prepare import Prepared
 
 PRIMARY = "ndcg@10"
 DEFAULT_GRID: tuple[tuple[int, float], ...] = tuple(
-    (k, shrink) for k in (2, 3, 5, 10, 25, 50, 100, 200, 400) for shrink in (0.0, 10.0, 50.0)
+    (k, shrink) for k in (1, 2, 3, 5, 10, 25, 50, 100, 200, 400) for shrink in (0.0, 10.0, 50.0)
 )
 SEED = 20261107
 

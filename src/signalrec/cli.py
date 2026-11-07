@@ -98,7 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dataset", choices=sorted(movielens.FORMATS))
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     p.add_argument("--out", type=Path, help="default: results/<dataset>/baselines.json")
-    p.add_argument("--grid", help="item-kNN k:shrink pairs, e.g. 10:0,50:10 (default: 9 k values x 3 shrinks)")
+    p.add_argument("--grid", help="item-kNN k:shrink pairs, e.g. 10:0,50:10 (default: 10 k values x 3 shrinks)")
     p.set_defaults(run=_baselines)
     return parser
 

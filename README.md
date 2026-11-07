@@ -217,6 +217,13 @@ reported leak) each fail a test now (`d5ed2b5`, `86f3e56`, `7b2f7f2`, `c5df773`)
 brute-force item-kNN test had come to mirror the implementation's formula, so a second test checks the plain float
 definition independently (`694c87b`).
 
+A third round (one agent at `c5df773`, 17:04-17:08, on round 2's fixes; `tests/review_d1r3/`) found 3: manifest
+counts of the wrong type passed (`60.0 == 60`, `False == 0`; counts must be ints); `prepare` over a symlink or a
+file at the target still ended in a traceback (now refused up front); and `baselines` read the manifest twice, so a
+concurrent `prepare` could put new parameters beside old metrics (`load` now attaches the manifest it checked).
+All fixed in `2e9f886`, its 3 survivors killed in `296bbf0`. Fewer findings each round (11, 8, 3), each round
+mostly about the previous round's fixes; I stopped after three.
+
 My own checks found what the reviewer didn't look for: the real files' CRLF and Latin-1 (above), the grid choosing
 its own edge three times, and two claims of mine that measurement contradicted: the median ml-1m history (56
 training positives, not the 70 I first wrote; caught before it was committed) and the reason popularity evaluates

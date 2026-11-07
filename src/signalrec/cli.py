@@ -48,7 +48,8 @@ def _baselines(args: argparse.Namespace) -> int:
     processed = args.data_dir / "processed" / args.dataset
     prepared = prepare.load(processed, args.dataset)
     manifest = prepared.manifest
-    assert manifest is not None  # load always attaches the manifest it checked
+    if manifest is None:  # load always attaches the manifest it checked; not an assert, which -O would remove
+        raise prepare.PrepareError(f"{processed}: loaded without its manifest")
     grid = experiment.DEFAULT_GRID if args.grid is None else tuple(args.grid)
     result = {
         "command": "signalrec " + shlex.join(args.argv),

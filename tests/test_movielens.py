@@ -141,7 +141,11 @@ def test_dat_movies_are_latin_1(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("line", "message"),
     [
-        ("1::Title::Comedy::Extra", "expected 3 fields, got 4"),
+        ("1::Title::Comedy::Extra", "expected 3 '::'-separated fields"),
+        ("1::Title", "expected 3 '::'-separated fields"),
+        ("1::Title\twith a tab::Comedy", "control character"),
+        ("1::Title::Sci\tFi", "bad genres"),
+        ("1::Title:: Comedy", "bad genres"),
         ("x::Title::Comedy", "bad movie id"),
         ("1:: ::Comedy", "an empty title"),
         ("1::Title::Comedy||Drama", "bad genres"),

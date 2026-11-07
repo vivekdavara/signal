@@ -155,15 +155,38 @@ def _refuse_duplicates(path: Path, users: IntArray, items: IntArray, first: int)
         )
 
 
+# An ml-1m movie line is id::title::genres. Genre names never hold ':', so the last '::' ends the title, which may
+# itself end in ':' ("Foo (1999):::Comedy" is the title "Foo (1999):"); a title holding '::' is ambiguous: refused.
+_DAT_MOVIE = re.compile(r"([^:]*)::(.*)::([^:]*)")
+# Tabs and other control characters can't be stored in items.tsv and aren't in any MovieLens title or genre.
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _dat_fields(path: Path, line_no: int, line: str) -> list[str]:
+    m = _DAT_MOVIE.fullmatch(line)
+    if m is None or "::" in m.group(2):
+        raise ParseError(f"{path}:{line_no}: expected 3 '::'-separated fields: {line!r}")
+    return list(m.groups())
+
+
+def _csv_fields(path: Path, line_no: int, line: str) -> list[str]:
+    """One line as one CSV record: a quote left open fails here instead of swallowing the next line."""
+    try:
+        records = list(csv.reader([line], strict=True))
+    except csv.Error as exc:
+        raise ParseError(f"{path}:{line_no}: {exc}: {line!r}") from None
+    return records[0] if records else []
+
+
 def _movie(path: Path, line_no: int, raw_id: str, title: str, genres: str) -> Movie:
     if not re.fullmatch(r"[1-9][0-9]{0,14}", raw_id):
         raise ParseError(f"{path}:{line_no}: bad movie id {raw_id!r}")
     # Titles are display text: 11 in ml-latest-small end in a space ("96 Minutes (2011) "), so they're stripped.
     title = title.strip()
-    if not title:
-        raise ParseError(f"{path}:{line_no}: an empty title")
+    if not title or _CONTROL.search(title):
+        raise ParseError(f"{path}:{line_no}: an empty title or one with a control character: {title!r}")
     names = () if genres == "(no genres listed)" else tuple(genres.split("|"))
-    if any(not g or g != g.strip() for g in names):
+    if any(not g or g != g.strip() or _CONTROL.search(g) for g in names):
         raise ParseError(f"{path}:{line_no}: bad genres {genres!r}")
     return Movie(int(raw_id), title, names)
 
@@ -171,14 +194,13 @@ def _movie(path: Path, line_no: int, raw_id: str, title: str, genres: str) -> Mo
 def parse_movies(path: Path, fmt: Format) -> dict[int, Movie]:
     movies: dict[int, Movie] = {}
     if fmt.ratings_header is None:
-        rows = [(n + 1, line.split("::")) for n, line in enumerate(_lines(path, fmt))]
+        rows = [(n + 1, _dat_fields(path, n + 1, line)) for n, line in enumerate(_lines(path, fmt))]
     else:
         lines = _lines(path, fmt)
         if not lines or lines[0] != "movieId,title,genres":
             raise ParseError(f"{path}:1: expected the header 'movieId,title,genres'")
-        # csv handles the quoted titles ("American President, The (1995)"); the line numbers stay right because
-        # no title spans lines (checked: each row is one record).
-        rows = [(n + 2, row) for n, row in enumerate(csv.reader(lines[1:], strict=True))]
+        # csv handles the quoted titles ("American President, The (1995)"), one line at a time: no record spans lines.
+        rows = [(n + 2, _csv_fields(path, n + 2, line)) for n, line in enumerate(lines[1:])]
     for line_no, fields in rows:
         if len(fields) != 3:
             raise ParseError(f"{path}:{line_no}: expected 3 fields, got {len(fields)}")

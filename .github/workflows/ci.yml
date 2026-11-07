@@ -59,3 +59,7 @@ jobs:
           signalrec baselines ml-latest-small --out "$RUNNER_TEMP/baselines.json"
       - name: Compare with the committed results
         run: python scripts/compare_results.py results/ml-latest-small/baselines.json "$RUNNER_TEMP/baselines.json"
+      - name: Measure the leakage and compare with the committed results
+        run: |
+          signalrec leakage ml-latest-small --out "$RUNNER_TEMP/leakage.json"
+          python scripts/compare_results.py results/ml-latest-small/leakage.json "$RUNNER_TEMP/leakage.json"

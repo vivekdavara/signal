@@ -1,4 +1,5 @@
-"""Compare a fresh baselines.json with the committed one: CI's regression check on the real ml-latest-small.
+"""Compare a fresh baselines.json or leakage.json with the committed one: CI's regression check on the real
+ml-latest-small.
 
 The processed data must match exactly (counts, parameters, source hashes) and so must item-kNN's chosen parameters.
 Each test metric must be within TOLERANCE: item-kNN sums float32 similarities, and a different CPU or SciPy build can
@@ -6,6 +7,7 @@ round a near-tie the other way, which moves one user's rank. One user is 1/601 =
 ml-latest-small, so the tolerance allows about three such users.
 
     python scripts/compare_results.py results/ml-latest-small/baselines.json fresh.json
+    python scripts/compare_results.py results/ml-latest-small/leakage.json fresh-leakage.json
 """
 
 from __future__ import annotations
@@ -18,7 +20,31 @@ from typing import Any
 TOLERANCE = 0.005
 
 
+LEAKAGE = "popularity, global minus as of test time (paired)"
+SHARES = "training positives later than the user's test item"
+
+
+def compare_leakage(committed: dict[str, Any], fresh: dict[str, Any], tolerance: float = TOLERANCE) -> list[str]:
+    """A leakage.json: the users exactly; the shares and each metric's three values within the tolerance."""
+    problems = []
+    for key in ("dataset", "users"):
+        if committed[key] != fresh[key]:
+            problems.append(f"{key}: committed {committed[key]!r}, fresh {fresh[key]!r}")
+    for name, value in committed[SHARES].items():
+        if abs(fresh[SHARES][name] - value) > tolerance:
+            problems.append(f"{name}: committed {value:.4f}, fresh {fresh[SHARES][name]:.4f}")
+    for metric, cell in committed[LEAKAGE].items():
+        for name in ("global (leaky)", "as of test time", "difference"):
+            got = fresh[LEAKAGE][metric][name]
+            if abs(got - cell[name]) > tolerance:
+                problems.append(f"{metric} {name}: committed {cell[name]:.4f}, fresh {got:.4f}")
+    return problems
+
+
 def compare(committed: dict[str, Any], fresh: dict[str, Any], tolerance: float = TOLERANCE) -> list[str]:
+    """A baselines.json, or a leakage.json (told apart by their keys)."""
+    if LEAKAGE in committed:
+        return compare_leakage(committed, fresh, tolerance)
     problems = []
     for key in ("dataset", "users", "items", "prepared", "chosen"):
         if committed[key] != fresh[key]:

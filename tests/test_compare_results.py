@@ -69,3 +69,23 @@ def test_the_script_exits_1_on_a_difference(tmp_path: Path) -> None:
     differ = subprocess.run([sys.executable, SCRIPT, tmp_path / "a.json", tmp_path / "b.json"], capture_output=True)
     assert (same.returncode, differ.returncode) == (0, 1)
     assert b"users: committed 601, fresh 1" in differ.stdout
+
+
+def leakage_result() -> dict[str, Any]:
+    cell = {"global (leaky)": 0.02, "as of test time": 0.019, "difference": 0.001, "difference ci95": [-0.001, 0.003]}
+    return {
+        "dataset": "ml-latest-small",
+        "users": 601,
+        compare_results.SHARES: {"mean share": 0.52, "median share": 0.49},
+        compare_results.LEAKAGE: {"ndcg@10": dict(cell)},
+    }
+
+
+def test_leakage_results_are_compared_by_their_own_fields() -> None:
+    assert compare_results.compare(leakage_result(), leakage_result()) == []
+    fresh = copy.deepcopy(leakage_result())
+    fresh[compare_results.LEAKAGE]["ndcg@10"]["as of test time"] = 0.03
+    fresh[compare_results.SHARES]["mean share"] = 0.6
+    fresh["users"] = 600
+    problems = compare_results.compare(leakage_result(), fresh)
+    assert sorted(p.split(":")[0] for p in problems) == ["mean share", "ndcg@10 as of test time", "users"]

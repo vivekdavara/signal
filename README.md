@@ -141,10 +141,28 @@ So at the top of the list the leak is worth nothing measurable to popularity, an
 small (3% of Recall@50). The two counts differ in one more way: the as-of count includes other users' earlier test
 items, which the global count never sees. On ml-latest-small every difference's interval includes zero.
 
+### Pipeline cost (`python scripts/bench_pipeline.py ml-1m --repeats 5 --out results/ml-1m/bench.json`)
+
+ml-1m, median of 5 runs, load average 2.1-2.3, no sleep during any run (each run's load and sleep are in the JSON):
+
+| Stage | Median | Min |
+|---|---|---|
+| parse (`movielens.load`, 1,000,209 ratings) | 1.423 s | 1.422 s |
+| prepare (positives, 5-core, split) | 0.243 s | 0.240 s |
+| item-kNN fit (k=3, shrink=10, block 512) | 0.664 s | 0.662 s |
+| item-kNN evaluate (6,034 users × 3,125 movies, full ranking) | 0.217 s | 0.215 s |
+| popularity evaluate (same) | 0.476 s | 0.475 s |
+
+The similarity build's peak traced memory by column block (`tracemalloc`, which sees NumPy's arrays): 27.0 MiB at
+128 columns, 90.9 MiB at 512, 297.4 MiB at 2,048 and 451.5 MiB with all 3,125 movies in one block: linear in the
+block, as DESIGN.md says, so a catalogue too big for one block still fits by shrinking it. Popularity evaluates more
+slowly than item-kNN because its scores are a dense broadcast copied per batch and its many ties make the stable
+sort work harder; neither matters at this size.
+
 The grid (`experiment.DEFAULT_GRID`) is k ∈ {1, 2, 3, 5, 10, 25, 50, 100, 200, 400} × shrink ∈ {0, 10, 50}; it starts
 at 1 because the first runs, with the grid starting at 10, then 5, then 2, chose its smallest value each time. Every
-validation row is in the JSON. The JSON also records fit and evaluation times; they were taken while another job
-loaded the machine and are not reported here (day 4 measures latency properly).
+validation row is in the JSON. The baselines JSON also records fit and evaluation times from runs taken while other
+jobs loaded the machine; use the benchmark above instead.
 
 ## Day 1 notes
 

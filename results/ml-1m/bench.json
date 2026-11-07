@@ -1,0 +1,190 @@
+{
+  "command": "python scripts/bench_pipeline.py ml-1m --repeats 5 --out results/ml-1m/bench.json",
+  "dataset": "ml-1m",
+  "users": 6034,
+  "items": 3125,
+  "history_nnz": 568342,
+  "repeats": 5,
+  "timings": {
+    "parse (movielens.load)": {
+      "median_s": 1.4233944589504972,
+      "min_s": 1.4218612919794396,
+      "runs": [
+        {
+          "seconds": 1.4227272919379175,
+          "load_1m": 2.2861328125,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 1.4218612919794396,
+          "load_1m": 2.18310546875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 1.4233944589504972,
+          "load_1m": 2.18310546875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 1.433449458098039,
+          "load_1m": 2.18310546875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 1.43454287503846,
+          "load_1m": 2.18310546875,
+          "slept_s": 0.0
+        }
+      ]
+    },
+    "prepare (positives, k-core, split)": {
+      "median_s": 0.24294579203706235,
+      "min_s": 0.23968387499917299,
+      "runs": [
+        {
+          "seconds": 0.24276862503029406,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.24294579203706235,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.24633679201360792,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.24326625000685453,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.23968387499917299,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        }
+      ]
+    },
+    "item-kNN fit (k=3, shrink=10, block 512)": {
+      "median_s": 0.6641070418991148,
+      "min_s": 0.6624797499971464,
+      "runs": [
+        {
+          "seconds": 0.6656526670558378,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.6641070418991148,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.6624797499971464,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.664566290914081,
+          "load_1m": 2.16796875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.6635017499793321,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        }
+      ]
+    },
+    "item-kNN evaluate (all users, full ranking)": {
+      "median_s": 0.21738745900802314,
+      "min_s": 0.21457124990411103,
+      "runs": [
+        {
+          "seconds": 0.21750654105562717,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.21457124990411103,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.21738745900802314,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.2182825420750305,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.21695166605059057,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        }
+      ]
+    },
+    "popularity evaluate (all users, full ranking)": {
+      "median_s": 0.4756137499352917,
+      "min_s": 0.47543658304493874,
+      "runs": [
+        {
+          "seconds": 0.47958533302880824,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.47543658304493874,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.4756137499352917,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.47695095802191645,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        },
+        {
+          "seconds": 0.47545991593506187,
+          "load_1m": 2.154296875,
+          "slept_s": 0.0
+        }
+      ]
+    }
+  },
+  "similarity peak memory by block": {
+    "128": {
+      "peak_traced_bytes": 28327669,
+      "items_x_block_float64_bytes": 3200000
+    },
+    "512": {
+      "peak_traced_bytes": 95365981,
+      "items_x_block_float64_bytes": 12800000
+    },
+    "2048": {
+      "peak_traced_bytes": 311858484,
+      "items_x_block_float64_bytes": 51200000
+    },
+    "3125": {
+      "peak_traced_bytes": 473417100,
+      "items_x_block_float64_bytes": 78125000
+    }
+  },
+  "environment": {
+    "python": "3.11.12",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "machine": "arm64",
+    "cpu_count": 8
+  }
+}

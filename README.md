@@ -149,7 +149,8 @@ items, which the global count never sees. On ml-latest-small every difference's 
 
 ### Pipeline cost (`python scripts/bench_pipeline.py ml-1m --repeats 5 --out results/ml-1m/bench.json`)
 
-ml-1m, median of 5 runs, load average 2.1-2.3, no sleep during any run (each run's load and sleep are in the JSON):
+ml-1m, median of 5 runs, load average 2.1-2.3, no sleep during any run (each run's load and sleep are in the JSON).
+The power source wasn't recorded: the Mac was on AC at 15:52 and on battery by 17:21 (Low Power Mode off).
 
 | Stage | Median | Min |
 |---|---|---|

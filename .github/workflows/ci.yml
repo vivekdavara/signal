@@ -25,3 +25,37 @@ jobs:
         run: mypy
       - name: Test
         run: pytest
+
+  # The whole pipeline on the real ml-latest-small: downloaded from GroupLens by its pinned SHA-256 (cached under that
+  # hash, so GroupLens is asked once), never uploaded anywhere. The results must match the committed ones.
+  movielens-small:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # The real-data tests fail instead of skipping when this dataset is missing.
+      SIGNALREC_REQUIRE_DATA: ml-latest-small
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: pip install -e '.[dev]'
+      - name: Cache the archive by its pinned SHA-256
+        uses: actions/cache@v6
+        with:
+          path: data/zips/ml-latest-small.zip
+          key: movielens-ml-latest-small-696d65a3dfceac7c45750ad32df2c259311949efec81f0f144fdfb91ebc9e436
+      - name: Download (or verify the cached copy) and extract
+        run: signalrec download ml-latest-small
+      - name: Real-data tests
+        run: pytest -k real_ tests/test_movielens.py tests/test_prepare.py -rs
+      - name: Prepare and run the baselines
+        run: |
+          signalrec prepare ml-latest-small
+          signalrec baselines ml-latest-small --out "$RUNNER_TEMP/baselines.json"
+      - name: Compare with the committed results
+        run: python scripts/compare_results.py results/ml-latest-small/baselines.json "$RUNNER_TEMP/baselines.json"

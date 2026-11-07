@@ -4,13 +4,168 @@ A movie recommender with online serving, built in five days on MovieLens: baseli
 two-tower retriever trained with in-batch negatives, FAISS retrieval, a ranking stage, a Redis feature store for
 online features, and a FastAPI service (retrieve → rank → filter) with a latency benchmark and an A/B test simulator.
 
-Status: day 1 of 5 (design, data pipeline, baselines). See [DESIGN.md](DESIGN.md).
+**Status: day 1 of 5** (design, data pipeline, evaluation protocol, baselines). [DESIGN.md](DESIGN.md) is the
+specification for all five days. CI has not run on GitHub yet (see "Day 1 notes").
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph offline["Offline (days 1-3)"]
+    GL[(GroupLens<br/>MovieLens zips)] -->|pinned SHA-256| DL[download]
+    DL --> PR[prepare<br/>positives, 5-core,<br/>leave-last-out]
+    PR --> NPY[(data/processed<br/>.npy + manifest)]
+    NPY --> BL[baselines<br/>popularity, item-kNN]
+    NPY --> TT[two-tower<br/>training]
+    TT --> IDX[(FAISS index)]
+    TT --> RK[ranker<br/>training]
+    BL --> EV[evaluation<br/>full ranking,<br/>bootstrap CIs]
+    TT --> EV
+  end
+  subgraph online["Online (days 3-4)"]
+    C([client]) --> API[FastAPI :8116]
+    API --> FS[(Redis :6383<br/>feature store)]
+    API --> UT[user tower<br/>numpy]
+    UT --> IDX
+    IDX --> RANK[rank]
+    RANK --> FIL[filter]
+    FIL --> C
+  end
+```
+
+Built so far: everything on the offline side up to the evaluation of the baselines.
 
 ## How to run
 
 ```bash
-make venv     # Python 3.11 virtualenv with the package and dev tools
-make check    # ruff, ruff format --check, mypy --strict, pytest
+make venv                                  # Python 3.11 virtualenv with the package and dev tools
+make check                                 # ruff, ruff format --check, mypy --strict, pytest
+.venv/bin/signalrec download ml-1m         # from GroupLens, checked against its pinned SHA-256
+.venv/bin/signalrec prepare ml-1m          # data/processed/ml-1m/
+.venv/bin/signalrec baselines ml-1m        # results/ml-1m/baselines.json and a table
+```
+
+`ml-latest-small` works the same way. `signalrec synthetic` writes a **synthetic** dataset in ml-latest-small's file
+format (`signalrec prepare synthetic`, `signalrec baselines synthetic`); the tests use it, and no number from it is a
+claim about real users.
+
+## Data
+
+| Dataset | Ratings | Users | Movies | After the pipeline (users × movies, training positives) |
+|---|---|---|---|---|
+| ml-latest-small | 100,836 | 610 | 9,742 | 601 × 1,955, 40,025 |
+| ml-1m | 1,000,209 | 6,040 | 3,883 listed, 3,706 rated | 6,034 × 3,125, 562,308 |
+
+Counts after the pipeline from `signalrec prepare <dataset>` (also pinned by a test). **No MovieLens data is in this
+repository**: the ml-1m licence forbids redistribution without permission, so the code downloads it from GroupLens,
+and CI does the same for ml-latest-small without uploading anything derived from it. Research use only; GroupLens
+doesn't endorse this project. Citation: F. Maxwell Harper and Joseph A. Konstan. 2015. The MovieLens Datasets:
+History and Context. ACM TiiS 5, 4: 19:1-19:19. <https://doi.org/10.1145/2827872>
+
+The pipeline (DESIGN.md, "From ratings to implicit feedback"): a rating of 4 or more is a positive; users and movies
+with fewer than 5 positives are dropped until both bounds hold at once; each user's last positive by (time, movie id)
+is the test item and the one before it the validation item.
+
+## Evaluation protocol
+
+Every model ranks **every** movie for every user (no sampled negatives), with the user's history removed. Choices are
+made on the validation item with the training positives as history; test numbers come from the model refit on
+training + validation. With one held-out item, Recall@K is the share of users whose item is in their top K and
+NDCG@K averages `1/log2(rank+1)` inside the cut-off. Ranks are exact counts with ties broken by movie index, so they
+don't depend on a sort. Intervals are 95% percentile bootstraps over users (1,000 resamples, seed 20261107); model
+differences use a paired bootstrap on the same resampled users.
+
+## Results (day 1)
+
+Measured on 2026-11-07 (Apple M3, macOS 26.6, Python 3.11.12, NumPy 2.4.6, SciPy 1.17.1).
+
+**ml-1m**, test, 6,034 users (`signalrec baselines ml-1m`, `results/ml-1m/baselines.json`):
+
+| Model | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Coverage@10 |
+|---|---|---|---|---|---|
+| popularity | 0.0389 [0.0343, 0.0441] | 0.0193 [0.0166, 0.0221] | 0.1294 [0.1210, 0.1387] | 0.0385 [0.0355, 0.0417] | 0.037 |
+| item-kNN (k=3, shrink=10) | 0.0630 [0.0568, 0.0689] | 0.0314 [0.0280, 0.0349] | 0.1845 [0.1743, 0.1946] | 0.0581 [0.0544, 0.0618] | 0.213 |
+
+Item-kNN minus popularity (paired): NDCG@10 +0.0122 [0.0085, 0.0157], Recall@50 +0.0550 [0.0444, 0.0653].
+
+**ml-latest-small**, test, 601 users (`signalrec baselines ml-latest-small`, `results/ml-latest-small/baselines.json`):
+
+| Model | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Coverage@10 |
+|---|---|---|---|---|---|
+| popularity | 0.0449 [0.0283, 0.0616] | 0.0235 [0.0146, 0.0328] | 0.1414 [0.1131, 0.1697] | 0.0441 [0.0339, 0.0542] | 0.031 |
+| item-kNN (k=2, shrink=0) | 0.0765 [0.0549, 0.0982] | 0.0360 [0.0252, 0.0470] | 0.1780 [0.1464, 0.2063] | 0.0584 [0.0462, 0.0703] | 0.384 |
+
+Item-kNN minus popularity (paired): NDCG@10 +0.0125 [-0.0003, 0.0256]. On 601 users the interval includes zero:
+this dataset can't separate the two baselines at NDCG@10, which is why ml-1m carries the reported results.
+
+What the numbers say:
+
+- **NDCG@10 is flat across small neighbourhoods; Recall@50 wants more.** Validation NDCG@10 on ml-1m peaks at k=3
+  (0.0386), with k=10 at 0.0359 and k=100 at 0.0325, so the protocol picks k=3. After the protocol's run I also
+  scored k=10 (shrink 0) on test, labelled post hoc (`signalrec baselines ml-1m --grid 10:0 --out
+  results/ml-1m/post-hoc-item-knn-k10.json`): NDCG@10 0.0322 [0.0286, 0.0355], no worse than k=3's 0.0314, and
+  Recall@50 0.2158 against k=3's 0.1845. So validation's preference for k=3 at NDCG@10 didn't carry over to test
+  (the gap is inside the intervals), while the Recall@50 cost of tuning for NDCG@10 is real. The reported number
+  stays k=3's: switching to k=10 after seeing test would be tuning on test. Day 2 should choose with a paired
+  interval on validation, not the bare maximum.
+- **Popularity is a strong floor and a narrow one.** Its top 10 lists cover 3.7% of the catalogue; item-kNN's cover
+  21%. A day-2 model has to beat item-kNN's 0.0314, not popularity's 0.0193.
+- **These are low absolute numbers by design**: one held-out item ranked against about 3,000 movies, with no sampled
+  negatives. Papers that rank against 100 sampled negatives report much larger numbers; they aren't comparable.
+
+The grid (`experiment.DEFAULT_GRID`) is k ∈ {1, 2, 3, 5, 10, 25, 50, 100, 200, 400} × shrink ∈ {0, 10, 50}; it starts
+at 1 because the first runs, with the grid starting at 10, then 5, then 2, chose its smallest value each time. Every
+validation row is in the JSON. The JSON also records fit and evaluation times; they were taken while another job
+loaded the machine and are not reported here (day 4 measures latency properly).
+
+## Day 1 notes
+
+Facts about the real files that the strict parsers found (DESIGN.md said nothing about them before):
+
+- ml-latest-small uses **CRLF** line endings in both files; GroupLens's README doesn't say so. ml-1m uses LF.
+- ml-1m's `movies.dat` is **Latin-1**, not UTF-8: 62 bytes above 0x7f, each alone (0xe9 for "é").
+- **11 titles** in ml-latest-small end in a space ("96 Minutes (2011) "); titles are stripped.
+- The real files parse to GroupLens's published counts (a test, run in CI on ml-latest-small).
+
+CI: the workflow has two jobs (lint, types and tests; then the whole pipeline on the real ml-latest-small, compared
+with the committed results). The GitHub repository could not be created from the scheduled session, so neither has
+run on GitHub; every step was rehearsed in a fresh clone with a fresh virtualenv on macOS.
+
+## Design decisions
+
+- **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are
+  dropped from the training signal; the day-4 serving filter still removes every rated movie.
+- **Leave-last-out by time, with movie id breaking ties.** It mirrors "what will this user like next" and makes the
+  split a pure function of the data (ml-1m users often rated dozens of movies in one second). Known cost: a per-user
+  split leaks calendar time across users (DESIGN.md, "Known leakage").
+- **Full ranking, exact ranks.** Sampled metrics can reorder models; counting ranks (rather than sorting) makes ties
+  explicit and the result independent of the sort.
+- **Validation for choices, test for numbers, intervals on everything.** The test set is touched once per model.
+- **Byte-deterministic processed data with a hashed manifest.** Re-running gives the same bytes; loading refuses a
+  file that changed.
+- **Pinned downloads and member-name extraction.** A swapped or truncated archive fails the hash; a hostile archive
+  can't write outside its directory because only the expected member names are ever read.
+
+## Limitations (day 1)
+
+- The per-user split's cross-user time leakage (above) is documented, not removed.
+- Item-kNN's similarity is cosine on binary likes; no recency weighting, which the k results suggest would help.
+- ml-latest-small is too small to separate the baselines at NDCG@10; it is the CI dataset, not the results dataset.
+
+## Layout
+
+```
+src/signalrec/
+  download.py     pinned download and extraction
+  movielens.py    strict parsers for both formats
+  prepare.py      positives, k-core, split, indexing, the on-disk format
+  evaluate.py     exact ranks, Recall/NDCG/coverage, bootstrap intervals
+  baselines.py    popularity, item-kNN
+  experiment.py   the protocol: tune on validation, report on test
+  synthetic.py    a synthetic dataset for tests and CI
+  cli.py          signalrec download | synthetic | prepare | baselines
+scripts/compare_results.py   CI's check against the committed results
+results/<dataset>/baselines.json
 ```
 
 ## License

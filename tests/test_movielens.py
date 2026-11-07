@@ -220,3 +220,9 @@ def test_a_bare_lf_inside_a_crlf_movies_file_is_refused(tmp_path: Path) -> None:
     path.write_bytes(b"movieId,title,genres\r\n1,A (2000),Drama\n2,B (2000),Comedy\r\n")
     with pytest.raises(ParseError, match=r"movies\.csv:2: a line ending other than"):
         movielens.parse_movies(path, SMALL)
+
+
+def test_a_delete_character_in_a_title_is_refused(tmp_path: Path) -> None:
+    path = write(tmp_path / "movies.dat", ["1::Title\x7fhere (1999)::Comedy"], "\n")
+    with pytest.raises(ParseError, match="control character"):
+        movielens.parse_movies(path, ONE_M)

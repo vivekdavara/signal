@@ -237,13 +237,18 @@ def _replace_dir(new: Path, target: Path) -> None:
         os.replace(new, target)
         return
     old = Path(tempfile.mkdtemp(prefix=f".{target.name}-old-", dir=target.parent))
-    os.replace(target, old)  # onto the empty directory mkdtemp made
+    try:
+        os.replace(target, old)  # onto the empty directory mkdtemp made
+    except BaseException:
+        old.rmdir()  # still empty: nothing was moved
+        raise
     try:
         os.replace(new, target)
     except BaseException:
         os.replace(old, target)
         raise
-    shutil.rmtree(old)
+    # The new data is in place; failing to delete the old copy must not report the save as failed.
+    shutil.rmtree(old, ignore_errors=True)
 
 
 EXPECTED_FILES = frozenset({*(f"{name}.npy" for name in ARRAYS), "items.tsv"})
@@ -262,11 +267,36 @@ def read_manifest(directory: Path) -> dict[str, Any]:
     return manifest
 
 
-def load(directory: Path) -> Prepared:
-    """Load a processed directory, refusing any file whose SHA-256 differs from the manifest's."""
+def _check_manifest_fields(directory: Path, manifest: dict[str, Any], dataset: str | None) -> None:
+    """The fields other than "files": types, the parameters' names, and the dataset if the caller named one."""
+    fmt = manifest.get("format")
+    # type() and not isinstance: True == 1 in Python, and a manifest saying "format": true is not format 1.
+    if type(fmt) is not int or fmt != FORMAT_VERSION:
+        raise PrepareError(f"{directory}: format {fmt!r}, expected {FORMAT_VERSION}")
+    name = manifest.get("dataset")
+    if not isinstance(name, str):
+        raise PrepareError(f"{directory}: the manifest names no dataset")
+    if dataset is not None and name != dataset:
+        raise PrepareError(f"{directory}: holds {name!r}, not {dataset!r}")
+    params = manifest.get("params")
+    if not isinstance(params, dict) or set(params) != {"min_rating", "min_user_positives", "min_item_positives"}:
+        raise PrepareError(f"{directory}: the manifest's params are {params!r}")
+    sources = manifest.get("sources")
+    if not isinstance(sources, dict) or not all(isinstance(v, str) for v in sources.values()):
+        raise PrepareError(f"{directory}: the manifest's sources are {sources!r}")
+    if not isinstance(manifest.get("counts"), dict):
+        raise PrepareError(f"{directory}: the manifest has no counts")
+
+
+def load(directory: Path, dataset: str | None = None) -> Prepared:
+    """Load a processed directory, refusing any file whose SHA-256 differs from the manifest's, a manifest whose
+    counts disagree with the arrays, and (if ``dataset`` is given) one built from another dataset.
+
+    The manifest itself has no hash (it would have to hold its own); its counts are checked against the arrays, and
+    its parameters and sources are what ``save`` wrote: trusted, and checked only for shape.
+    """
     manifest = read_manifest(directory)
-    if manifest.get("format") != FORMAT_VERSION:
-        raise PrepareError(f"{directory}: format {manifest.get('format')!r}, expected {FORMAT_VERSION}")
+    _check_manifest_fields(directory, manifest, dataset)
     files = manifest.get("files")
     if not isinstance(files, dict) or set(files) != EXPECTED_FILES:
         listed = sorted(files) if isinstance(files, dict) else files
@@ -283,4 +313,7 @@ def load(directory: Path) -> Prepared:
             _, _, title, genre_field = line.rstrip("\n").split("\t")
             titles.append(title)
             genres.append(tuple(genre_field.split("|")) if genre_field else ())
-    return Prepared(**arrays, titles=tuple(titles), genres=tuple(genres))
+    prepared = Prepared(**arrays, titles=tuple(titles), genres=tuple(genres))
+    if counts(prepared) != manifest["counts"]:
+        raise PrepareError(f"{directory}: the manifest's counts {manifest['counts']} disagree with the arrays")
+    return prepared

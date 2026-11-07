@@ -304,3 +304,33 @@ def test_the_prepared_data_does_not_depend_on_the_row_order(seed: int) -> None:
     for name in prepare.ARRAYS:
         np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
     assert a.titles == b.titles
+
+
+def test_a_manifest_that_cannot_be_read_is_a_prepare_error(tmp_path: Path) -> None:
+    (tmp_path / "manifest.json").mkdir()  # reading it raises IsADirectoryError, an OSError
+    with pytest.raises(PrepareError, match="unreadable"):
+        prepare.load(tmp_path)
+
+
+@pytest.mark.parametrize("char", ["\x00", "\x01", "\x1f", "\x7f"])
+def test_any_control_character_in_a_title_is_refused(
+    tmp_path: Path, synthetic_prepared: prepare.Prepared, char: str
+) -> None:
+    bad = prepare.Prepared(**{**synthetic_prepared.__dict__, "titles": (f"A{char}B", *synthetic_prepared.titles[1:])})
+    with pytest.raises(PrepareError, match="control character"):
+        prepare.save(bad, tmp_path / "out", "synthetic", {}, Params())
+
+
+def test_load_checks_the_manifest_against_the_arrays_and_the_dataset(
+    tmp_path: Path, synthetic_prepared: prepare.Prepared
+) -> None:
+    prepare.save(synthetic_prepared, tmp_path / "out", "synthetic", {"ratings.csv": "ab"}, Params())
+    prepare.load(tmp_path / "out", "synthetic")
+    with pytest.raises(PrepareError, match="holds 'synthetic', not 'ml-1m'"):
+        prepare.load(tmp_path / "out", "ml-1m")
+    path = tmp_path / "out" / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["counts"]["train"] += 1
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(PrepareError, match="disagree with the arrays"):
+        prepare.load(tmp_path / "out")

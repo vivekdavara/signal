@@ -46,8 +46,8 @@ def _prepare(args: argparse.Namespace) -> int:
 
 def _baselines(args: argparse.Namespace) -> int:
     processed = args.data_dir / "processed" / args.dataset
+    prepared = prepare.load(processed, args.dataset)
     manifest = prepare.read_manifest(processed)
-    prepared = prepare.load(processed)
     grid = experiment.DEFAULT_GRID if args.grid is None else tuple(args.grid)
     result = {
         "command": "signalrec " + shlex.join(args.argv),
@@ -68,7 +68,7 @@ def _leakage(args: argparse.Namespace) -> int:
     result = {
         "command": "signalrec " + shlex.join(args.argv),
         "dataset": args.dataset,
-        **leakage.run(prepare.load(processed)),
+        **leakage.run(prepare.load(processed, args.dataset)),
     }
     out = args.out or Path("results") / args.dataset / "leakage.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -86,7 +86,7 @@ def _leakage(args: argparse.Namespace) -> int:
 
 
 def _recommend(args: argparse.Namespace) -> int:
-    prepared = prepare.load(args.data_dir / "processed" / args.dataset)
+    prepared = prepare.load(args.data_dir / "processed" / args.dataset, args.dataset)
     model = Popularity() if args.model == "popularity" else ItemKNN(k=args.neighbours, shrink=args.shrink)
     try:
         print(recommend.describe(prepared, model, args.user, args.k))

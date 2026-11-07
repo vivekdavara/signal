@@ -193,3 +193,30 @@ def test_the_real_files_parse_to_the_published_counts(name: str) -> None:
     assert len(np.unique(dataset.ratings.users)) == users
     assert len(np.unique(dataset.ratings.items)) == rated
     assert len(dataset.movies) == listed
+
+
+def test_a_movies_csv_without_its_header_is_refused(tmp_path: Path) -> None:
+    path = write(tmp_path / "movies.csv", ["1,Toy Story (1995),Animation"], "\r\n")
+    with pytest.raises(ParseError, match="expected the header"):
+        movielens.parse_movies(path, SMALL)
+
+
+def test_a_repeated_pair_is_found_in_a_two_line_file(tmp_path: Path) -> None:
+    path = write(tmp_path / "ratings.dat", ["1::5::4::1", "1::5::3::2"], "\n")
+    with pytest.raises(ParseError, match="rated movie 5 again"):
+        movielens.parse_ratings(path, ONE_M)
+
+
+def test_an_empty_file_has_no_rows(tmp_path: Path) -> None:
+    path = tmp_path / "ratings.dat"
+    path.write_bytes(b"")
+    assert len(movielens.parse_ratings(path, ONE_M)) == 0
+    (tmp_path / "movies.dat").write_bytes(b"")
+    assert movielens.parse_movies(tmp_path / "movies.dat", ONE_M) == {}
+
+
+def test_a_bare_lf_inside_a_crlf_movies_file_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "movies.csv"
+    path.write_bytes(b"movieId,title,genres\r\n1,A (2000),Drama\n2,B (2000),Comedy\r\n")
+    with pytest.raises(ParseError, match=r"movies\.csv:2: a line ending other than"):
+        movielens.parse_movies(path, SMALL)

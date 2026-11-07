@@ -217,3 +217,27 @@ def test_the_pins_are_well_formed() -> None:
         outs = [out for _, out in archive.members]
         assert len(set(outs)) == len(outs)
         assert all(member.startswith(f"{name}/") and "/" not in out for member, out in archive.members)
+
+
+def test_a_marker_from_another_archive_means_extract_again(tmp_path: Path, served: Archive) -> None:
+    zip_path = dl.fetch(served, tmp_path / "zips")
+    target = dl.extract(served, zip_path, tmp_path / "raw")
+    (target / dl.MARKER).write_text("f" * 64 + "\n")
+    (target / "ratings.csv").write_bytes(b"from another version")
+    dl.extract(served, zip_path, tmp_path / "raw")
+    assert (target / "ratings.csv").read_bytes() == RATINGS
+
+
+def test_a_missing_member_file_means_extract_again(tmp_path: Path, served: Archive) -> None:
+    zip_path = dl.fetch(served, tmp_path / "zips")
+    target = dl.extract(served, zip_path, tmp_path / "raw")
+    (target / "movies.csv").unlink()
+    dl.extract(served, zip_path, tmp_path / "raw")
+    assert (target / "movies.csv").read_bytes() == MOVIES
+
+
+def test_a_cached_zip_of_the_right_size_but_wrong_bytes_is_fetched_again(tmp_path: Path, served: Archive) -> None:
+    zips = tmp_path / "zips"
+    zips.mkdir()
+    (zips / "ml-x.zip").write_bytes(b"\0" * served.size)
+    assert dl.sha256_of(dl.fetch(served, zips)) == served.sha256

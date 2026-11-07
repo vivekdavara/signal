@@ -140,8 +140,6 @@ def extract(archive: Archive, zip_path: Path, raw_dir: Path) -> Path:
                     info = zf.getinfo(member)
                 except KeyError:
                     raise DownloadError(f"{zip_path}: no member {member!r}") from None
-                if info.is_dir():
-                    raise DownloadError(f"{zip_path}: {member!r} is a directory")
                 if info.file_size > MAX_MEMBER_BYTES:
                     raise DownloadError(f"{zip_path}: {member!r} declares {info.file_size} bytes")
                 # ZipFile checks the CRC when the member is read to its end, and stops at the declared size.

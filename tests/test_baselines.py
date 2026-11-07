@@ -112,3 +112,11 @@ def test_ties_keep_the_smaller_items_beyond_insertion_sort_sizes() -> None:
     s = neighbours(sp.csr_matrix(x), k=10, shrink=0.0, block=7)
     for j in range(64):
         assert s[j].indices.tolist() == sorted(i for i in range(11) if i != j)[:10]
+
+
+def test_only_positive_similarities_are_stored() -> None:
+    # Movies 0 and 2 share no user: their similarity is 0 and must not be an explicit entry.
+    x = np.array([[1, 1, 0], [0, 1, 1]], dtype=np.float32)
+    s = neighbours(sp.csr_matrix(x), k=5, shrink=0.0)
+    assert (s.data > 0).all()
+    assert s.nnz == 4

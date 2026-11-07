@@ -257,3 +257,26 @@ def test_a_missing_or_corrupt_manifest_is_a_prepare_error(tmp_path: Path) -> Non
     (tmp_path / "manifest.json").write_text('{"form')
     with pytest.raises(PrepareError, match="unreadable"):
         prepare.load(tmp_path)
+
+
+def test_movies_without_genres_round_trip(tmp_path: Path) -> None:
+    p = prepare.prepare(hand_dataset(), Params(min_rating=4.0, min_user_positives=3, min_item_positives=2))
+    assert () in p.genres
+    prepare.save(p, tmp_path / "out", "hand", {}, Params())
+    assert prepare.load(tmp_path / "out").genres == p.genres
+
+
+def test_a_title_with_a_line_break_is_refused(tmp_path: Path, synthetic_prepared: prepare.Prepared) -> None:
+    bad = prepare.Prepared(**{**synthetic_prepared.__dict__, "titles": ("A\nB", *synthetic_prepared.titles[1:])})
+    with pytest.raises(PrepareError, match="control character"):
+        prepare.save(bad, tmp_path / "out", "synthetic", {}, Params())
+
+
+def test_an_item_bound_below_one_is_refused() -> None:
+    with pytest.raises(PrepareError, match="min_item_positives"):
+        Params(min_item_positives=0).check()
+
+
+def test_a_repeated_pair_in_a_history_is_refused() -> None:
+    with pytest.raises(PrepareError, match="appears twice"):
+        prepare.interaction_matrix(arr([0, 0]), arr([1, 1]), 1, 2)

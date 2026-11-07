@@ -175,9 +175,10 @@ Facts about the real files that the strict parsers found (DESIGN.md said nothing
 - **11 titles** in ml-latest-small end in a space ("96 Minutes (2011) "); titles are stripped.
 - The real files parse to GroupLens's published counts (a test, run in CI on ml-latest-small).
 
-CI: the workflow has two jobs (lint, types and tests; then the whole pipeline on the real ml-latest-small, compared
-with the committed results). The GitHub repository could not be created from the scheduled session, so neither has
-run on GitHub; every step was rehearsed in a fresh clone with a fresh virtualenv on macOS.
+CI: the workflow has two jobs (lint, types and tests; then the whole pipeline on the real ml-latest-small, with the
+baselines and the leakage compared with the committed results as whole documents). The GitHub repository could not
+be created from the scheduled session, so neither has run on GitHub; every step was rehearsed in a fresh clone with
+a fresh virtualenv on macOS.
 
 ## Review of day 1
 
@@ -221,8 +222,11 @@ A third round (one agent at `c5df773`, 17:04-17:08, on round 2's fixes; `tests/r
 counts of the wrong type passed (`60.0 == 60`, `False == 0`; counts must be ints); `prepare` over a symlink or a
 file at the target still ended in a traceback (now refused up front); and `baselines` read the manifest twice, so a
 concurrent `prepare` could put new parameters beside old metrics (`load` now attaches the manifest it checked).
-All fixed in `2e9f886`, its 3 survivors killed in `296bbf0`. Fewer findings each round (11, 8, 3), each round
-mostly about the previous round's fixes; I stopped after three.
+All fixed in `2e9f886`, its 3 survivors killed in `296bbf0`. A fourth round (17:14-17:16) looked at round 3's fixes
+and at the leakage comparison I had added to CI an hour earlier: round 3's fixes held, the new comparison didn't
+(NaN passed, intervals unchecked, extra keys ignored, missing keys a `KeyError`, `601.0` passing as a count).
+`compare_results.py` now compares whole documents recursively instead of hand-picked fields (`e4b4fb0`).
+Findings per round: 11, 8, 3, 5; every round's were mostly in code written since the round before.
 
 My own checks found what the reviewer didn't look for: the real files' CRLF and Latin-1 (above), the grid choosing
 its own edge three times, and two claims of mine that measurement contradicted: the median ml-1m history (56

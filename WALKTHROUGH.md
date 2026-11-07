@@ -105,3 +105,34 @@ an unstable-sort mutant survived a 4-movie test and is killed by the 64-movie on
 Lint, mypy --strict and the tests (on synthetic and hand-made data); then the real ml-latest-small, downloaded by its
 pinned hash, through every real-data test, the pipeline and the baselines, compared with the committed results
 (`scripts/compare_results.py`): counts and the chosen k exactly, metrics within 0.005.
+
+## What review and measurement changed (day 1)
+
+**How do you make "ties go to the smaller index" true for item-kNN?**
+Two traps. Equal similarities computed differently (3/√27 and 1/√3) differ in a double's last bit, and equal scores
+summed in different orders can differ too. So with no shrink a similarity is `sqrt(co²/(n_i n_j))`: IEEE division
+and square root are correctly rounded, so equal rationals give identical doubles. Then each similarity is rounded to
+a multiple of 2^-32 and stored as an int64, and a score is an integer sum: order can't matter. What can't be fixed:
+1/√12 + 1/√12 and 1/√3 are equal as reals but each rounds separately; deciding whether two sums of square roots are
+equal needs exact algebraic arithmetic. `tests/review_d1/test_precision.py` pins that case as a bound.
+
+**Why integers and not float64?**
+float64 makes the error smaller but keeps both traps; the reviewer's score case is one ulp off in float64 too. With
+integers, the guarantees are exact and the cost is a resolution of 2^-32 (about 2.3e-10) in what "equal similarity"
+means. A score stays exact in float64 for histories up to 2^21 movies; `fit` checks it.
+
+**What was the most serious thing the review found?**
+Not a defect but a gap: replacing the validation items with the test items in tuning (`experiment._timed_eval`)
+survived every test. The protocol's most important rule was untested. The test that kills it re-evaluates every grid
+row independently on the validation items and requires the same numbers.
+
+**Is replacing the processed directory atomic?**
+No, and DESIGN.md says so. POSIX can't swap two directories atomically. `_replace_dir` renames the old one aside,
+the new one in, and deletes the old one; if the second rename fails, the old one goes back. A crash between the
+renames leaves the old directory beside the target under a hidden name, never a half-written one in its place.
+
+**Why does the leakage barely help popularity?**
+For the average ml-1m user, 44% of training positives are later than their test item, but popularity counted only
+from earlier positives is within noise at NDCG@10 (+0.0002 [-0.0006, +0.0010]). The movies people like next are
+mostly ones that were already popular; later likes reshuffle the long tail, which shows at Recall@50 (+0.0043
+[+0.0013, +0.0073]). `leakage.popularity_as_of` computes it in one sweep over users sorted by test time.

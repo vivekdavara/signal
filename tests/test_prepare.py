@@ -17,8 +17,10 @@ from signalrec.movielens import Dataset, Movie, Ratings
 from signalrec.prepare import Params, PrepareError
 from tests.conftest import real_raw_dir
 
-# A module-level synthetic dataset for the property test (Hypothesis can't take function-scoped fixtures).
-SYNTHETIC = movielens.load("synthetic", synthetic.write(Path(tempfile.mkdtemp(prefix="signal-syn-")) / "raw", 80, 120))
+# A module-level synthetic dataset for the property test (Hypothesis can't take function-scoped fixtures). It is
+# loaded into memory, so its temporary directory is removed straight away.
+with tempfile.TemporaryDirectory(prefix="signal-syn-") as _tmp:
+    SYNTHETIC = movielens.load("synthetic", synthetic.write(Path(_tmp) / "raw", 80, 120))
 
 
 def arr(values: list[int]) -> np.ndarray:

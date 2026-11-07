@@ -117,7 +117,8 @@ a multiple of 2^-32 and stored as an int64, and a score is an integer sum: order
 equal needs exact algebraic arithmetic. `tests/review_d1/test_precision.py` pins that case as a bound.
 
 **Why integers and not float64?**
-float64 makes the error smaller but keeps both traps; the reviewer's score case is one ulp off in float64 too. With
+float64 makes the error smaller but keeps both traps: the reviewer's score case is exactly one ulp apart in float64
+too, in the same direction (checked by summing the terms in Python). With
 integers, the guarantees are exact and the cost is a resolution of 2^-32 (about 2.3e-10) in what "equal similarity"
 means. A score stays exact in float64 for histories up to 2^21 movies; `fit` checks it.
 
@@ -133,6 +134,6 @@ renames leaves the old directory beside the target under a hidden name, never a 
 
 **Why does the leakage barely help popularity?**
 For the average ml-1m user, 44% of training positives are later than their test item, but popularity counted only
-from earlier positives is within noise at NDCG@10 (+0.0002 [-0.0006, +0.0010]). The movies people like next are
-mostly ones that were already popular; later likes reshuffle the long tail, which shows at Recall@50 (+0.0043
-[+0.0013, +0.0073]). `leakage.popularity_as_of` computes it in one sweep over users sorted by test time.
+from earlier positives is within noise at NDCG@10 (+0.0002 [-0.0006, +0.0010]) and only slightly worse at
+Recall@50 (+0.0043 [+0.0013, +0.0073]). My reading, not something I measured: the head of the popularity list is
+stable over ml-1m's few years, so later likes mostly reshuffle positions 10-50. `leakage.popularity_as_of` computes it in one sweep over users sorted by test time.

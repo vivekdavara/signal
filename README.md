@@ -113,6 +113,25 @@ What the numbers say:
 - **These are low absolute numbers by design**: one held-out item ranked against about 3,000 movies, with no sampled
   negatives. Papers that rank against 100 sampled negatives report much larger numbers; they aren't comparable.
 
+### How much does the split leak? (`signalrec leakage <dataset>`, `results/<dataset>/leakage.json`)
+
+A per-user split lets a model train on positives that happened after a user's test item. On ml-1m the leak is
+large in exposure: for the average user, **44.2%** of all training positives are later than their test item (52% on
+ml-latest-small), and 99.98% of users have at least one. What is it worth? Popularity is the model most exposed, so
+`signalrec leakage` ranks each test item under popularity counted only from positives strictly *before* that user's
+test time and compares it, paired, with the usual popularity:
+
+| ml-1m, test, 6,034 users | Global popularity (leaky) | As of each test time | Difference [95% CI] |
+|---|---|---|---|
+| Recall@10 | 0.0389 | 0.0384 | +0.0005 [-0.0013, +0.0025] |
+| NDCG@10 | 0.0193 | 0.0190 | +0.0002 [-0.0006, +0.0010] |
+| Recall@50 | 0.1294 | 0.1251 | +0.0043 [+0.0013, +0.0073] |
+| NDCG@50 | 0.0385 | 0.0375 | +0.0010 [+0.0003, +0.0018] |
+
+So at the top of the list the leak is worth nothing measurable to popularity, and deeper in the list it is real but
+small (3% of Recall@50). The two counts differ in one more way: the as-of count includes other users' earlier test
+items, which the global count never sees. On ml-latest-small every difference's interval includes zero.
+
 The grid (`experiment.DEFAULT_GRID`) is k ∈ {1, 2, 3, 5, 10, 25, 50, 100, 200, 400} × shrink ∈ {0, 10, 50}; it starts
 at 1 because the first runs, with the grid starting at 10, then 5, then 2, chose its smallest value each time. Every
 validation row is in the JSON. The JSON also records fit and evaluation times; they were taken while another job
@@ -148,7 +167,8 @@ run on GitHub; every step was rehearsed in a fresh clone with a fresh virtualenv
 
 ## Limitations (day 1)
 
-- The per-user split's cross-user time leakage (above) is documented, not removed.
+- The per-user split's cross-user time leakage is measured (above), not removed. It is small for popularity; a
+  learned model could use it more, so day 2's two-tower model gets the same as-of check where it's affordable.
 - Item-kNN's similarity is cosine on binary likes; no recency weighting, which the k results suggest would help.
 - ml-latest-small is too small to separate the baselines at NDCG@10; it is the CI dataset, not the results dataset.
 
@@ -162,10 +182,11 @@ src/signalrec/
   evaluate.py     exact ranks, Recall/NDCG/coverage, bootstrap intervals
   baselines.py    popularity, item-kNN
   experiment.py   the protocol: tune on validation, report on test
+  leakage.py      the split's calendar-time leakage, measured
   synthetic.py    a synthetic dataset for tests and CI
-  cli.py          signalrec download | synthetic | prepare | baselines
+  cli.py          signalrec download | synthetic | prepare | baselines | leakage
 scripts/compare_results.py   CI's check against the committed results
-results/<dataset>/baselines.json
+results/<dataset>/{baselines,leakage}.json
 ```
 
 ## License

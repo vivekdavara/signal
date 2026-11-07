@@ -1,0 +1,53 @@
+{
+  "command": "signalrec leakage ml-1m",
+  "dataset": "ml-1m",
+  "users": 6034,
+  "training positives later than the user's test item": {
+    "mean share": 0.44162927614098746,
+    "median share": 0.43607862594876834,
+    "users with any": 0.9998342724560823,
+    "users with over half": 0.43089161418627775
+  },
+  "popularity, global minus as of test time (paired)": {
+    "recall@10": {
+      "global (leaky)": 0.038945972820682795,
+      "as of test time": 0.0384487901889294,
+      "difference": 0.0004971826317533914,
+      "difference ci95": [
+        -0.001325820351342393,
+        0.002485913158766987
+      ]
+    },
+    "ndcg@10": {
+      "global (leaky)": 0.019263906660032585,
+      "as of test time": 0.019036653909947035,
+      "difference": 0.00022725275008554993,
+      "difference ci95": [
+        -0.0005560896195268665,
+        0.001027776310244521
+      ]
+    },
+    "recall@50": {
+      "global (leaky)": 0.12943321179980113,
+      "as of test time": 0.12512429565793834,
+      "difference": 0.004308916141862795,
+      "difference ci95": [
+        0.001325820351342393,
+        0.007292011932383162
+      ]
+    },
+    "ndcg@50": {
+      "global (leaky)": 0.03854671396435661,
+      "as of test time": 0.03753811565840356,
+      "difference": 0.001008598305953054,
+      "difference ci95": [
+        0.00031061583440009614,
+        0.0018323646209343226
+      ]
+    }
+  },
+  "bootstrap": {
+    "resamples": 1000,
+    "seed": 20261107
+  }
+}

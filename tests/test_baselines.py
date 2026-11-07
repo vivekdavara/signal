@@ -137,3 +137,29 @@ def test_scores_stay_exact_up_to_the_history_limit(monkeypatch: pytest.MonkeyPat
 def test_item_knn_refuses_bad_parameters_when_built(k: int, shrink: float) -> None:
     with pytest.raises(ValueError, match="item-kNN needs"):
         ItemKNN(k=k, shrink=shrink)
+
+
+@settings(max_examples=300, deadline=None)
+@given(matrices, st.integers(1, 10), st.sampled_from([0.0, 0.5, 3.0]))
+def test_neighbours_agree_with_the_plain_float_definition(x: np.ndarray, k: int, shrink: float) -> None:
+    """Independent of the implementation's canonical formula and rounding (review round 2 noted that
+    dense_neighbours mirrors both): co / (sqrt(n_j n_i) + shrink) written the obvious way, in floats."""
+    s = neighbours(sp.csr_matrix(x), k, shrink).toarray()
+    n_items = x.shape[1]
+    counts = x.sum(axis=0)
+    for j in range(n_items):
+        sims = {}
+        for i in range(n_items):
+            if i != j and counts[i] * counts[j] > 0:
+                co = float((x[:, i] * x[:, j]).sum())
+                if co > 0:
+                    sims[i] = co / (math.sqrt(counts[i] * counts[j]) + shrink)
+        # Every stored similarity is the definition's value to within the 2^-32 grid.
+        for stored in np.flatnonzero(s[j]).tolist():
+            assert abs(s[j, stored] / SCALE - sims[stored]) <= 2**-32
+        # The chosen neighbours are the definition's k largest, unless the k-th and the next are a near-tie (where
+        # the grid and the index decide, by design).
+        ranked = sorted(sims.items(), key=lambda kv: (-kv[1], kv[0]))
+        if len(ranked) > k and abs(ranked[k - 1][1] - ranked[k][1]) < 1e-9:
+            continue
+        assert set(np.flatnonzero(s[j]).tolist()) == {i for i, _ in ranked[:k]}

@@ -199,9 +199,10 @@ tuning survived every test**, so the protocol's central rule was untested. Each 
 (`d10cb54`, `03223f5`; re-applied from a copy and restored byte for byte), except `extract`'s `is_dir()` check,
 which was unreachable and is removed.
 
-My own checks found three things the reviewer didn't: the parsers' CRLF and Latin-1 findings (above), the grid
-choosing its own edge three times, and two claims of mine that measurement contradicted (the median history was 56,
-not 70; popularity's slower evaluation is the sort, not ties), each corrected in a commit that says so.
+My own checks found what the reviewer didn't look for: the real files' CRLF and Latin-1 (above), the grid choosing
+its own edge three times, and two claims of mine that measurement contradicted: the median ml-1m history (56
+training positives, not the 70 I first wrote; caught before it was committed) and the reason popularity evaluates
+more slowly (the sort's work on varied scores, not ties; corrected in `f2c825f`).
 
 ## Design decisions
 

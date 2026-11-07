@@ -200,6 +200,23 @@ tuning survived every test**, so the protocol's central rule was untested. Each 
 (`d10cb54`, `03223f5`; re-applied from a copy and restored byte for byte), except `extract`'s `is_dir()` check,
 which was unreachable and is removed.
 
+A second round (one agent at `f2c825f`, 16:46-16:58, asked "what did each round-1 fix break?"; tests in
+`tests/review_d1r2/`) found 8 more defects, most of them in round 1's fixes:
+
+| Finding | Fix |
+|---|---|
+| `shrink < 0` let NaN through; `rint(NaN · 2^32)` as int64 is INT64_MIN, so every similarity was dropped. | Shrink must be finite and ≥ 0, also checked when an `ItemKNN` is built (`d5ed2b5`). |
+| Round 1 mapped `OSError` to `DownloadError`, but `http.client.IncompleteRead` isn't an `OSError`. | Both mapped (`d5ed2b5`). |
+| Round 1's replacement left an empty `.<name>-old-*` directory when the first rename failed. | Removed; a failed delete of the old copy after the swap no longer fails the save (`86f3e56`). |
+| `"format": true` passed the version check (`True == 1`). | Must be an `int` (`86f3e56`). |
+| A manifest without params, counts or sources was a `KeyError`; another dataset's directory was evaluated and mislabelled; counts weren't checked. | Fields checked, counts must equal the arrays', `load(directory, dataset)` (`86f3e56`). |
+| `recommend --neighbours 0`, `--shrink -1` tracebacks; `--shrink nan`, `--k -1`, `--k 0` exited 0 with wrong lists. | argparse types shared with `--grid` (`7b2f7f2`). |
+
+Its 13 surviving mutants (including the leakage report's two columns swapped, which would flip the sign of the
+reported leak) each fail a test now (`d5ed2b5`, `86f3e56`, `7b2f7f2`, `c5df773`). It also pointed out that the
+brute-force item-kNN test had come to mirror the implementation's formula, so a second test checks the plain float
+definition independently (`694c87b`).
+
 My own checks found what the reviewer didn't look for: the real files' CRLF and Latin-1 (above), the grid choosing
 its own edge three times, and two claims of mine that measurement contradicted: the median ml-1m history (56
 training positives, not the 70 I first wrote; caught before it was committed) and the reason popularity evaluates
@@ -226,6 +243,8 @@ more slowly (the sort's work on varied scores, not ties; corrected in `f2c825f`)
   learned model could use it more, so day 2's two-tower model gets the same as-of check where it's affordable.
 - Item-kNN's similarity is cosine on binary likes; no recency weighting, which the k results suggest would help.
 - ml-latest-small is too small to separate the baselines at NDCG@10; it is the CI dataset, not the results dataset.
+- Similarities are kept to 2^-32, so a shrink above about 4e9 rounds every similarity to zero; nothing refuses such
+  a shrink (the useful range is 0 to about 100).
 
 ## Layout
 

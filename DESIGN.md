@@ -72,7 +72,9 @@ positives were someone's last or second-to-last). Such movies stay in the catalo
 **Known leakage.** A per-user split is not a global time split: one user's training data can be later in calendar
 time than another user's test item, so a model can learn from "the future" (Ji et al., 2023). The popularity baseline
 is the most exposed to this. A global time split would remove it but leaves few users with both history and a test
-item in these datasets; the README states the caveat next to the numbers.
+item in these datasets. Instead the leak is **measured** (`signalrec leakage`): the share of training positives later
+than each user's test item, and popularity counted only from positives strictly before each user's test time against
+the usual popularity, compared with a paired bootstrap. The README reports both.
 
 ### Processed format
 

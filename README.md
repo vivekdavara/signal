@@ -123,6 +123,11 @@ What the numbers say:
 - **These are low absolute numbers by design**: one held-out item ranked against about 3,000 movies, with no sampled
   negatives. Papers that rank against 100 sampled negatives report much larger numbers; they aren't comparable.
 
+The grid (`experiment.DEFAULT_GRID`) is k ∈ {1, 2, 3, 5, 10, 25, 50, 100, 200, 400} × shrink ∈ {0, 10, 50}; it starts
+at 1 because the first runs, with the grid starting at 10, then 5, then 2, chose its smallest value each time. Every
+validation row is in the JSON. The baselines JSON also records fit and evaluation times from runs taken while other
+jobs loaded the machine; use the benchmark above instead.
+
 ### How much does the split leak? (`signalrec leakage <dataset>`, `results/<dataset>/leakage.json`)
 
 A per-user split lets a model train on positives that happened after a user's test item. On ml-1m the leak is
@@ -160,11 +165,6 @@ block, as DESIGN.md says, so a catalogue too big for one block still fits by shr
 slowly than item-kNN because of `top_k`'s stable sort (35.4 ms against 13.2 ms per 512 users, timed separately):
 item-kNN's scores are mostly equal zeros (74 distinct values in user 0's row against popularity's 682), which the
 sort runs through quickly. Neither matters at this size.
-
-The grid (`experiment.DEFAULT_GRID`) is k ∈ {1, 2, 3, 5, 10, 25, 50, 100, 200, 400} × shrink ∈ {0, 10, 50}; it starts
-at 1 because the first runs, with the grid starting at 10, then 5, then 2, chose its smallest value each time. Every
-validation row is in the JSON. The baselines JSON also records fit and evaluation times from runs taken while other
-jobs loaded the machine; use the benchmark above instead.
 
 ## Day 1 notes
 

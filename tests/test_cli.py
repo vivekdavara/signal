@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -27,3 +28,12 @@ def test_errors_are_one_line_and_exit_1(tmp_path: Path, capsys: pytest.CaptureFi
     assert cli.main(["synthetic", "--data-dir", str(tmp_path)]) == 0
     assert cli.main(["prepare", "synthetic", "--data-dir", str(tmp_path), "--min-user-positives", "2"]) == 1
     assert "at least 3" in capsys.readouterr().err
+
+
+def test_the_leakage_command_writes_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(["synthetic", "--data-dir", str(tmp_path), "--users", "60", "--items", "90"]) == 0
+    assert cli.main(["prepare", "synthetic", "--data-dir", str(tmp_path)]) == 0
+    out = tmp_path / "leakage.json"
+    assert cli.main(["leakage", "synthetic", "--data-dir", str(tmp_path), "--out", str(out)]) == 0
+    assert "popularity ndcg@10: global " in capsys.readouterr().out
+    assert json.loads(out.read_text())["dataset"] == "synthetic"

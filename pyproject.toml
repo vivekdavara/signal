@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "signalrec"
+version = "0.1.0"
+description = "A movie recommender with online serving: MovieLens baselines, a two-tower retriever, FAISS retrieval, a ranking stage and a Redis feature store behind FastAPI."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Vivek Davara" }]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.3",
+    "scipy>=1.16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.2",
+    "hypothesis>=6.170",
+    "ruff==0.17.3",
+    "mypy>=2.4",
+    "scipy-stubs>=1.16",
+]
+
+[project.scripts]
+signalrec = "signalrec.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+signalrec = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [".scratch", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "NPY"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]

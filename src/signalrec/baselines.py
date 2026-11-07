@@ -8,6 +8,13 @@ similar movies:
 
 ``co`` counts users who liked both, ``n`` users who liked each. The similarity matrix is built in column blocks
 (``X^T X[:, block]``), so memory is O(items × block) instead of O(items²).
+
+**Exact ties.** "Ties go to the smaller index" must not be decided by rounding. Two things would decide it otherwise:
+equal similarities computed by different expressions (3/sqrt(27) and 1/sqrt(3) differ in the last bit of a double),
+and equal scores summed in different orders. So, with no shrink, a similarity is computed as sqrt(co² / (n_j n_i)):
+equal rationals divide to the same correctly rounded double, and so take the same square root. Every similarity is
+then rounded to a multiple of 2^-32 and kept as an integer, and a score is an exact integer sum. Similarities closer
+than 2^-32 (about 2.3e-10) count as tied; that is the resolution of the "similarity" this baseline means.
 """
 
 from __future__ import annotations
@@ -18,6 +25,12 @@ import scipy.sparse as sp
 
 IntArray = npt.NDArray[np.int64]
 Float32Array = npt.NDArray[np.float32]
+Float64Array = npt.NDArray[np.float64]
+
+# Similarities are integers in units of 2^-32. A score sums at most one similarity (<= 1) per history movie, so it
+# stays an exact float64 (below 2^53) for histories of up to 2^21 movies.
+SCALE = 2**32
+MAX_HISTORY = 2**21
 
 
 class Popularity:
@@ -36,43 +49,51 @@ class Popularity:
 
 
 def neighbours(history: sp.csr_matrix, k: int, shrink: float, block: int = 512) -> sp.csr_matrix:
-    """The pruned similarity matrix S: row j holds sim(j, i) for j's k most similar movies i, ties to smaller i.
+    """The pruned similarity matrix S in units of 2^-32 (int64): row j holds sim(j, i) for j's k most similar movies
+    i, ties to the smaller i.
 
-    Movies with zero similarity are never neighbours, so a row can hold fewer than k entries.
+    Movies whose similarity rounds to zero are never neighbours, so a row can hold fewer than k entries.
     """
     if k < 1:
         raise ValueError("k must be at least 1")
     if shrink < 0:
         raise ValueError("shrink must be non-negative")
+    if block < 1:
+        raise ValueError("block must be at least 1")
     x = sp.csc_matrix(history, dtype=np.float32)
     n_items = x.shape[1]
     counts = np.asarray(x.sum(axis=0), dtype=np.float64).ravel()
     xt = sp.csr_matrix(x.T)
     rows: list[IntArray] = []
     cols: list[IntArray] = []
-    vals: list[Float32Array] = []
+    vals: list[IntArray] = []
     keep = min(k, n_items)
     for start in range(0, n_items, block):
         stop = min(start + block, n_items)
         # co[i, c] = users who liked item i and item start + c.
         co = np.asarray((xt @ x[:, start:stop]).toarray(), dtype=np.float64)
-        denom = np.sqrt(np.outer(counts, counts[start:stop])) + shrink
+        # Counts and co-counts are integers far below 2^26, so these products are exact in float64.
+        product = np.outer(counts, counts[start:stop])
         with np.errstate(divide="ignore", invalid="ignore"):
-            sim = np.where(denom > 0, co / denom, 0.0)
+            if shrink == 0:
+                sim = np.where(product > 0, np.sqrt(co * co / product), 0.0)
+            else:
+                sim = co / (np.sqrt(product) + shrink)
+        fixed = np.rint(sim * SCALE).astype(np.int64)
         block_items = np.arange(start, stop)
-        sim[block_items, block_items - start] = 0.0
-        # Column c is sim(start + c, ·) by symmetry; a stable sort on -sim keeps equal values in index order.
-        top = np.argsort(-sim, axis=0, kind="stable")[:keep]
-        top_vals = np.take_along_axis(sim, top, axis=0)
+        fixed[block_items, block_items - start] = 0
+        # Column c is sim(start + c, ·) by symmetry; a stable sort on the negated integers keeps ties in index order.
+        top = np.argsort(-fixed, axis=0, kind="stable")[:keep]
+        top_vals = np.take_along_axis(fixed, top, axis=0)
         for c in range(stop - start):
             nonzero = top_vals[:, c] > 0
             rows.append(np.full(int(nonzero.sum()), start + c, dtype=np.int64))
             cols.append(top[nonzero, c].astype(np.int64))
-            vals.append(top_vals[nonzero, c].astype(np.float32))
-    data = np.concatenate(vals) if vals else np.empty(0, dtype=np.float32)
+            vals.append(top_vals[nonzero, c])
+    data = np.concatenate(vals) if vals else np.empty(0, dtype=np.int64)
     row = np.concatenate(rows) if rows else np.empty(0, dtype=np.int64)
     col = np.concatenate(cols) if cols else np.empty(0, dtype=np.int64)
-    return sp.csr_matrix((data, (row, col)), shape=(n_items, n_items), dtype=np.float32)
+    return sp.csr_matrix((data, (row, col)), shape=(n_items, n_items), dtype=np.int64)
 
 
 class ItemKNN:
@@ -90,11 +111,16 @@ class ItemKNN:
         return {"k": self.k, "shrink": self.shrink}
 
     def fit(self, history: sp.csr_matrix) -> None:
-        self.history = sp.csr_matrix(history, dtype=np.float32)
-        self.similarity = neighbours(self.history, self.k, self.shrink, self.block)
+        longest = int(np.diff(history.indptr).max()) if history.shape[0] else 0
+        if longest > MAX_HISTORY:
+            raise ValueError(f"a history of {longest} movies would overflow exact scores (limit {MAX_HISTORY})")
+        self.history = sp.csr_matrix(history, dtype=np.int64)
+        self.similarity = neighbours(history, self.k, self.shrink, self.block)
 
-    def score(self, users: IntArray) -> Float32Array:
+    def score(self, users: IntArray) -> Float64Array:
+        """Exact sums in units of 2^-32, returned as float64 (exact: below 2^53, see MAX_HISTORY)."""
         if self.history is None or self.similarity is None:
             raise RuntimeError("fit first")
-        scores: Float32Array = np.asarray((self.history[users] @ self.similarity).toarray(), dtype=np.float32)
+        total = np.asarray((self.history[users] @ self.similarity).toarray(), dtype=np.int64)
+        scores: Float64Array = total.astype(np.float64)
         return scores

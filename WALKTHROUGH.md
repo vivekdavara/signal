@@ -137,3 +137,17 @@ For the average ml-1m user, 44% of training positives are later than their test 
 from earlier positives is within noise at NDCG@10 (+0.0002 [-0.0006, +0.0010]) and only slightly worse at
 Recall@50 (+0.0043 [+0.0013, +0.0073]). My reading, not something I measured: the head of the popularity list is
 stable over ml-1m's few years, so later likes mostly reshuffle positions 10-50. `leakage.popularity_as_of` computes it in one sweep over users sorted by test time.
+
+**Why run more than one review round?**
+Because fixes have bugs. Round 1 mapped `OSError` to a one-line error, but a dropped HTTP body raises
+`http.client.IncompleteRead`, which isn't an `OSError`; it replaced "delete then rename" with "rename aside, rename
+in", and left an empty directory when the first rename failed; it validated `--grid` and left `recommend`'s own
+arguments unvalidated. Round 2 was asked only "what did each fix break?" and found 8 defects, most of them of that
+kind. Each finding arrives as a failing test, so a fix is done when its test passes and the mutant it guards is
+re-applied and fails.
+
+**How do you know a test isn't vacuous?**
+Mutation: change the code the test guards (an operator, a constant, a swapped argument), run the test, restore the
+file from a copy and compare bytes. One example of a test that looked right and wasn't: "the interval brackets the
+mean difference" passed with the arguments of the paired bootstrap swapped, because on 150 users the interval is
+wide enough to hold both d and -d. The test now recomputes the interval independently and compares exactly.

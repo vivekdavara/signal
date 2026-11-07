@@ -5,7 +5,7 @@ two-tower retriever trained with in-batch negatives, FAISS retrieval, a ranking 
 online features, and a FastAPI service (retrieve → rank → filter) with a latency benchmark and an A/B test simulator.
 
 **Status: day 1 of 5** (design, data pipeline, evaluation protocol, baselines). [DESIGN.md](DESIGN.md) is the
-specification for all five days. CI has not run on GitHub yet (see "Day 1 notes").
+specification for all five days. CI runs on every push (see "Day 1 notes").
 
 ## Architecture
 
@@ -177,9 +177,10 @@ Facts about the real files that the strict parsers found (DESIGN.md said nothing
 - The real files parse to GroupLens's published counts (a test, run in CI on ml-latest-small).
 
 CI: the workflow has two jobs (lint, types and tests; then the whole pipeline on the real ml-latest-small, with the
-baselines and the leakage compared with the committed results as whole documents). The GitHub repository could not
-be created from the scheduled session, so neither has run on GitHub; every step was rehearsed in a fresh clone with
-a fresh virtualenv on macOS.
+baselines and the leakage compared with the committed results as whole documents). The first run on GitHub
+(Ubuntu 24.04, x86-64, Python 3.11.18) passed both jobs: 212 tests passed and 4 skipped without data, then the real
+ml-latest-small matched the committed baselines and leakage results with 0 differences on another CPU architecture.
+Before the repository existed, every step was rehearsed in a fresh clone with a fresh virtualenv on macOS.
 
 ## Review of day 1
 

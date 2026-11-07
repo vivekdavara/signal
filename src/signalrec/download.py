@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import urllib.request
 import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,13 +96,16 @@ def fetch(archive: Archive, zip_dir: Path, opener: Opener = _open_url) -> Path:
     try:
         digest = hashlib.sha256()
         size = 0
-        with os.fdopen(fd, "wb") as out, opener(archive.url) as response:
-            while chunk := response.read(CHUNK):
-                size += len(chunk)
-                if size > archive.size:
-                    raise DownloadError(f"{archive.url}: more than the pinned {archive.size} bytes; stopped")
-                digest.update(chunk)
-                out.write(chunk)
+        try:
+            with os.fdopen(fd, "wb") as out, opener(archive.url) as response:
+                while chunk := response.read(CHUNK):
+                    size += len(chunk)
+                    if size > archive.size:
+                        raise DownloadError(f"{archive.url}: more than the pinned {archive.size} bytes; stopped")
+                    digest.update(chunk)
+                    out.write(chunk)
+        except OSError as exc:  # URLError, timeouts, a dropped connection, a full disk
+            raise DownloadError(f"{archive.url}: {exc}") from exc
         if size != archive.size:
             raise DownloadError(f"{archive.url}: got {size} bytes, pinned {archive.size}")
         if digest.hexdigest() != archive.sha256:
@@ -166,5 +170,5 @@ def download(name: str, data_dir: Path, opener: Opener = _open_url) -> Path:
     zip_path = fetch(archive, data_dir / "zips", opener)
     try:
         return extract(archive, zip_path, data_dir / "raw")
-    except zipfile.BadZipFile as exc:
+    except (zipfile.BadZipFile, zlib.error) as exc:
         raise DownloadError(f"{zip_path}: {exc}") from exc

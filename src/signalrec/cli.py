@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shlex
 import sys
 from collections.abc import Sequence
@@ -47,7 +48,7 @@ def _baselines(args: argparse.Namespace) -> int:
     processed = args.data_dir / "processed" / args.dataset
     manifest = prepare.read_manifest(processed)
     prepared = prepare.load(processed)
-    grid = experiment.DEFAULT_GRID if args.grid is None else tuple(_grid(args.grid))
+    grid = experiment.DEFAULT_GRID if args.grid is None else tuple(args.grid)
     result = {
         "command": "signalrec " + shlex.join(args.argv),
         "dataset": args.dataset,
@@ -96,11 +97,17 @@ def _recommend(args: argparse.Namespace) -> int:
 
 
 def _grid(spec: str) -> list[tuple[int, float]]:
-    """Parse k:shrink pairs: 10:0,50:10 -> [(10, 0.0), (50, 10.0)]."""
+    """Parse k:shrink pairs: 10:0,50:10 -> [(10, 0.0), (50, 10.0)]. A bad pair is an argparse usage error."""
     pairs = []
     for part in spec.split(","):
-        k, shrink = part.split(":")
-        pairs.append((int(k), float(shrink)))
+        k_text, sep, shrink_text = part.partition(":")
+        try:
+            k, shrink = int(k_text), float(shrink_text)
+        except ValueError:
+            k, shrink = 0, -1.0
+        if not sep or k < 1 or not math.isfinite(shrink) or shrink < 0:
+            raise argparse.ArgumentTypeError(f"{part!r}: expected k:shrink with k >= 1 and shrink >= 0")
+        pairs.append((k, shrink))
     return pairs
 
 
@@ -132,7 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dataset", choices=sorted(movielens.FORMATS))
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     p.add_argument("--out", type=Path, help="default: results/<dataset>/baselines.json")
-    p.add_argument("--grid", help="item-kNN k:shrink pairs, e.g. 10:0,50:10 (default: 10 k values x 3 shrinks)")
+    p.add_argument(
+        "--grid", type=_grid, help="item-kNN k:shrink pairs, e.g. 10:0,50:10 (default: 10 k values x 3 shrinks)"
+    )
     p.set_defaults(run=_baselines)
 
     p = sub.add_parser("leakage", help="measure the split's calendar-time leakage and what it is worth to popularity")

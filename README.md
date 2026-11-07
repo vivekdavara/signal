@@ -243,8 +243,9 @@ more slowly (the sort's work on varied scores, not ties; corrected in `f2c825f`)
   learned model could use it more, so day 2's two-tower model gets the same as-of check where it's affordable.
 - Item-kNN's similarity is cosine on binary likes; no recency weighting, which the k results suggest would help.
 - ml-latest-small is too small to separate the baselines at NDCG@10; it is the CI dataset, not the results dataset.
-- Similarities are kept to 2^-32, so a shrink above about 4e9 rounds every similarity to zero; nothing refuses such
-  a shrink (the useful range is 0 to about 100).
+- Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
+  and above about 2^33 ≈ 8.6e9 times a pair's co-count rounds it to zero (checked: a co-count-1 pair survives a shrink
+  of 8e9 and vanishes at 9e9). Nothing refuses such a shrink; the useful range is 0 to about 100.
 
 ## Layout
 

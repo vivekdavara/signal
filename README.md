@@ -156,8 +156,9 @@ ml-1m, median of 5 runs, load average 2.1-2.3, no sleep during any run (each run
 The similarity build's peak traced memory by column block (`tracemalloc`, which sees NumPy's arrays): 27.0 MiB at
 128 columns, 90.9 MiB at 512, 297.4 MiB at 2,048 and 451.5 MiB with all 3,125 movies in one block: linear in the
 block, as DESIGN.md says, so a catalogue too big for one block still fits by shrinking it. Popularity evaluates more
-slowly than item-kNN because its scores are a dense broadcast copied per batch and its many ties make the stable
-sort work harder; neither matters at this size.
+slowly than item-kNN because of `top_k`'s stable sort (35.4 ms against 13.2 ms per 512 users, timed separately):
+item-kNN's scores are mostly equal zeros (74 distinct values in user 0's row against popularity's 682), which the
+sort runs through quickly. Neither matters at this size.
 
 The grid (`experiment.DEFAULT_GRID`) is k ∈ {1, 2, 3, 5, 10, 25, 50, 100, 200, 400} × shrink ∈ {0, 10, 50}; it starts
 at 1 because the first runs, with the grid starting at 10, then 5, then 2, chose its smallest value each time. Every

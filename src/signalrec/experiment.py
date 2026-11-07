@@ -59,13 +59,26 @@ def _with_intervals(e: ev.Evaluation) -> dict[str, Any]:
 
 
 def run(p: Prepared, grid: Iterable[tuple[int, float]] = DEFAULT_GRID) -> dict[str, Any]:
-    tuning = []
+    tuning: list[dict[str, Any]] = []
+    per_user = []
     for k, shrink in grid:
         result = _timed_eval(ItemKNN(k=k, shrink=shrink), p, "val")
         summary = result.evaluation.summary()
         tuning.append({"k": k, "shrink": shrink, **summary, "fit_seconds": result.fit_seconds})
+        per_user.append(ev.ndcg_at(result.evaluation.ranks, 10))
     # Ties on the primary metric go to the first grid entry (smaller k, then smaller shrink).
-    best = max(tuning, key=lambda row: row[PRIMARY])
+    chosen = max(range(len(tuning)), key=lambda i: tuning[i][PRIMARY])
+    best = tuning[chosen]
+    # A diagnostic, not part of the choice: is the chosen row distinguishable from each other row on validation?
+    # The paired interval of (chosen - row) NDCG@10 over the same users; one that reaches 0 means "can't tell".
+    for row, values in zip(tuning, per_user, strict=True):
+        low, high = ev.paired_bootstrap_ci(per_user[chosen], values, seed=SEED)
+        row["chosen minus this, ndcg@10, paired ci95"] = [low, high]
+    indistinguishable = [
+        {"k": row["k"], "shrink": row["shrink"]}
+        for row in tuning
+        if row is not best and row["chosen minus this, ndcg@10, paired ci95"][0] <= 0
+    ]
     popularity_val = _timed_eval(Popularity(), p, "val").evaluation.summary()
 
     popularity = _timed_eval(Popularity(), p, "test")
@@ -83,6 +96,7 @@ def run(p: Prepared, grid: Iterable[tuple[int, float]] = DEFAULT_GRID) -> dict[s
         "items": p.n_items,
         "validation": {"popularity": popularity_val, "item-knn": tuning},
         "chosen": {"item-knn": {"k": best["k"], "shrink": best["shrink"]}},
+        "validation rows indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)": indistinguishable,
         "test": {
             "popularity": {
                 **_with_intervals(popularity.evaluation),

@@ -106,8 +106,10 @@ What the numbers say:
   results/ml-1m/post-hoc-item-knn-k10.json`): NDCG@10 0.0322 [0.0286, 0.0355], no worse than k=3's 0.0314, and
   Recall@50 0.2158 against k=3's 0.1845. So validation's preference for k=3 at NDCG@10 didn't carry over to test
   (the gap is inside the intervals), while the Recall@50 cost of tuning for NDCG@10 is real. The reported number
-  stays k=3's: switching to k=10 after seeing test would be tuning on test. Day 2 should choose with a paired
-  interval on validation, not the bare maximum.
+  stays k=3's: switching to k=10 after seeing test would be tuning on test. The JSON now says how firm each choice
+  is: for every grid row, the paired validation interval of (chosen - row) NDCG@10. On ml-1m, k=3 is
+  indistinguishable from 7 of the other 29 rows (k=2 to 5) and only just ahead of k=10 ([0.0000, 0.0054]); on
+  ml-latest-small it is indistinguishable from 19 of 29, so that dataset's choice is noise.
 - **Popularity is a strong floor and a narrow one.** Its top 10 lists cover 3.7% of the catalogue; item-kNN's cover
   21%. A day-2 model has to beat item-kNN's 0.0314, not popularity's 0.0193.
 - **These are low absolute numbers by design**: one held-out item ranked against about 3,000 movies, with no sampled

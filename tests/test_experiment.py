@@ -74,3 +74,24 @@ def test_the_baselines_command_writes_json_and_a_table(tmp_path: Path, capsys: p
     assert result["command"] == "signalrec " + " ".join(args)
     assert result["prepared"]["counts"]["users"] == result["users"]
     assert [(r["k"], r["shrink"]) for r in result["validation"]["item-knn"]] == [(5, 0.0), (10, 10.0)]
+
+
+def test_each_validation_row_is_compared_with_the_chosen_one(prepared: Prepared) -> None:
+    result = experiment.run(prepared, GRID)
+    rows = result["validation"]["item-knn"]
+    chosen = result["chosen"]["item-knn"]
+    for row in rows:
+        low, high = row["chosen minus this, ndcg@10, paired ci95"]
+        assert low <= high
+        if (row["k"], row["shrink"]) == (chosen["k"], chosen["shrink"]):
+            assert low == high == 0.0
+        else:
+            # The chosen row has the highest mean, so the difference's mean is >= 0 and the interval's top is too.
+            assert high >= 0.0
+    listed = result["validation rows indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)"]
+    assert chosen not in listed
+    assert all(
+        r["chosen minus this, ndcg@10, paired ci95"][0] <= 0
+        for r in rows
+        if {"k": r["k"], "shrink": r["shrink"]} in listed
+    )

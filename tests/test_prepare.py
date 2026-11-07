@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,9 @@ from signalrec import movielens, prepare, synthetic
 from signalrec.movielens import Dataset, Movie, Ratings
 from signalrec.prepare import Params, PrepareError
 from tests.conftest import real_raw_dir
+
+# A module-level synthetic dataset for the property test (Hypothesis can't take function-scoped fixtures).
+SYNTHETIC = movielens.load("synthetic", synthetic.write(Path(tempfile.mkdtemp(prefix="signal-syn-")) / "raw", 80, 120))
 
 
 def arr(values: list[int]) -> np.ndarray:
@@ -280,3 +284,21 @@ def test_an_item_bound_below_one_is_refused() -> None:
 def test_a_repeated_pair_in_a_history_is_refused() -> None:
     with pytest.raises(PrepareError, match="appears twice"):
         prepare.interaction_matrix(arr([0, 0]), arr([1, 1]), 1, 2)
+
+
+@settings(max_examples=10, deadline=None)
+@given(st.integers(0, 2**32 - 1))
+def test_the_prepared_data_does_not_depend_on_the_row_order(seed: int) -> None:
+    # MovieLens files happen to be sorted by user; nothing in the pipeline may rely on it.
+    ratings = SYNTHETIC.ratings
+    idx = np.random.default_rng(seed).permutation(len(ratings))
+    shuffled = Dataset(
+        "synthetic",
+        Ratings(ratings.users[idx], ratings.items[idx], ratings.ratings[idx], ratings.times[idx]),
+        SYNTHETIC.movies,
+    )
+    a = prepare.prepare(SYNTHETIC, Params())
+    b = prepare.prepare(shuffled, Params())
+    for name in prepare.ARRAYS:
+        np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
+    assert a.titles == b.titles

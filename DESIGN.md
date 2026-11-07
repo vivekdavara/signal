@@ -129,6 +129,12 @@ of two directories: a crash between the renames leaves the old one beside it und
 - **Training examples:** for each training positive, the history is the user's earlier positives (by the same time
   order as the split), capped at the 50 most recent; no future item ever enters its own history.
 - Same protocol and metrics as the baselines; the model must beat item-kNN on validation to be worth serving.
+- **Choosing hyperparameters under noise.** Day 1 showed that the validation maximum can be noise: item-kNN's k=3 was
+  indistinguishable from 7 of 29 grid rows on ml-1m (19 of 29 on ml-latest-small) and k=10 did no worse on test.
+  So day 2 reports the paired validation interval of every candidate against the best, as day 1 now does, and
+  "beats item-kNN" means the paired interval of (two-tower - item-kNN) NDCG@10 on validation excludes zero, not just
+  a higher mean. Training seeds are a source of noise too: the chosen configuration is trained with three seeds and
+  the spread reported.
 
 ## Day 3: FAISS, ranking, the feature store
 

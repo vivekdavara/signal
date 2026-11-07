@@ -43,7 +43,14 @@ make check                                 # ruff, ruff format --check, mypy --s
 .venv/bin/signalrec download ml-1m         # from GroupLens, checked against its pinned SHA-256
 .venv/bin/signalrec prepare ml-1m          # data/processed/ml-1m/
 .venv/bin/signalrec baselines ml-1m        # results/ml-1m/baselines.json and a table
+.venv/bin/signalrec leakage ml-1m          # results/ml-1m/leakage.json
+.venv/bin/signalrec recommend ml-1m --user 1   # one user's recent likes and item-kNN's top 10, by title
 ```
+
+For example, ml-1m user 1's last five likes are Disney and Pixar animation (The Hunchback of Notre Dame, Antz, A
+Bug's Life, Hercules, Mulan); item-kNN (k=3) puts Sleeping Beauty and Pinocchio in its top 10 next to broad favourites
+such as The Shawshank Redemption; popularity's top 10 has no animation at all. The held-out test movie is Pocahontas,
+which neither list contains.
 
 `ml-latest-small` works the same way. `signalrec synthetic` writes a **synthetic** dataset in ml-latest-small's file
 format (`signalrec prepare synthetic`, `signalrec baselines synthetic`); the tests use it, and no number from it is a
@@ -185,9 +192,11 @@ src/signalrec/
   baselines.py    popularity, item-kNN
   experiment.py   the protocol: tune on validation, report on test
   leakage.py      the split's calendar-time leakage, measured
+  recommend.py    one user's recommendations by title
   synthetic.py    a synthetic dataset for tests and CI
-  cli.py          signalrec download | synthetic | prepare | baselines | leakage
+  cli.py          signalrec download | synthetic | prepare | baselines | leakage | recommend
 scripts/compare_results.py   CI's check against the committed results
+scripts/bench_pipeline.py    stage timings and the similarity build's memory by block size
 results/<dataset>/{baselines,leakage}.json
 ```
 

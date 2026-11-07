@@ -61,6 +61,8 @@ FORMATS: dict[str, Format] = {
         allowed_ratings=WHOLE_STARS,
     ),
 }
+# signalrec.synthetic writes files in ml-latest-small's format.
+FORMATS["synthetic"] = FORMATS["ml-latest-small"]
 
 # The patterns allow at most 15 digits for an id or timestamp, so every value fits in int64.
 

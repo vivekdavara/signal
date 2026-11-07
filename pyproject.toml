@@ -44,6 +44,8 @@ extend-exclude = [".scratch", "data"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "NPY"]
+# × and → in docstrings and comments are meant.
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.mypy]
 python_version = "3.11"

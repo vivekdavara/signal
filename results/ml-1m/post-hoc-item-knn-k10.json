@@ -1,5 +1,5 @@
 {
-  "command": "signalrec baselines ml-1m --grid 10:0 --out .scratch/ml-1m-k10.json",
+  "command": "signalrec baselines ml-1m --grid 10:0 --out results/ml-1m/post-hoc-item-knn-k10.json",
   "dataset": "ml-1m",
   "prepared": {
     "params": {
@@ -47,8 +47,12 @@
         "coverage@20": 0.2784,
         "recall@50": 0.24146503148823334,
         "ndcg@50": 0.07225988386449786,
-        "coverage@50": 0.56192,
-        "fit_seconds": 1.0009911670349538
+        "coverage@50": 0.5616,
+        "fit_seconds": 0.6713811669033021,
+        "chosen minus this, ndcg@10, paired ci95": [
+          0.0,
+          0.0
+        ]
       }
     ]
   },
@@ -58,6 +62,7 @@
       "shrink": 0.0
     }
   },
+  "validation rows indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)": [],
   "test": {
     "popularity": {
       "recall@10": {
@@ -111,8 +116,8 @@
       "coverage@50": {
         "value": 0.10112
       },
-      "fit_seconds": 0.0004675000673159957,
-      "eval_seconds": 0.6650829169666395
+      "fit_seconds": 0.00030683400109410286,
+      "eval_seconds": 0.49007741606328636
     },
     "item-knn": {
       "recall@10": {
@@ -166,8 +171,8 @@
       "coverage@50": {
         "value": 0.55456
       },
-      "fit_seconds": 0.9743404579348862,
-      "eval_seconds": 0.38983900006860495
+      "fit_seconds": 0.6692513750167564,
+      "eval_seconds": 0.2847283330047503
     }
   },
   "item-knn minus popularity (paired)": {

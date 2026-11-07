@@ -53,9 +53,9 @@ such as The Shawshank Redemption; popularity's top 10 has no animation at all. T
 which neither list contains.
 
 `make data` downloads and prepares both datasets; `make results` regenerates every number in the results below
-(the benchmark wants a quiet machine). `ml-latest-small` works the same way as ml-1m. `signalrec synthetic` writes a **synthetic** dataset in ml-latest-small's file
-format (`signalrec prepare synthetic`, `signalrec baselines synthetic`); the tests use it, and no number from it is a
-claim about real users.
+(the benchmark wants a quiet machine). `ml-latest-small` works the same way as ml-1m. `signalrec synthetic` writes a
+**synthetic** dataset in ml-latest-small's file format (`signalrec prepare synthetic`, `signalrec baselines
+synthetic`); the tests use it, and no number from it is a claim about real users.
 
 ## Data
 

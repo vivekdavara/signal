@@ -96,18 +96,37 @@ def _recommend(args: argparse.Namespace) -> int:
     return 0
 
 
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected an integer >= 1")
+    return value
+
+
+def _shrink(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if not math.isfinite(value) or value < 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a finite number >= 0")
+    return value
+
+
 def _grid(spec: str) -> list[tuple[int, float]]:
     """Parse k:shrink pairs: 10:0,50:10 -> [(10, 0.0), (50, 10.0)]. A bad pair is an argparse usage error."""
     pairs = []
     for part in spec.split(","):
         k_text, sep, shrink_text = part.partition(":")
         try:
-            k, shrink = int(k_text), float(shrink_text)
-        except ValueError:
-            k, shrink = 0, -1.0
-        if not sep or k < 1 or not math.isfinite(shrink) or shrink < 0:
-            raise argparse.ArgumentTypeError(f"{part!r}: expected k:shrink with k >= 1 and shrink >= 0")
-        pairs.append((k, shrink))
+            if not sep:
+                raise argparse.ArgumentTypeError("no ':'")
+            pairs.append((_positive_int(k_text), _shrink(shrink_text)))
+        except argparse.ArgumentTypeError:
+            raise argparse.ArgumentTypeError(f"{part!r}: expected k:shrink with k >= 1 and shrink >= 0") from None
     return pairs
 
 
@@ -154,9 +173,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dataset", choices=sorted(movielens.FORMATS))
     p.add_argument("--user", type=int, required=True, help="the MovieLens user id")
     p.add_argument("--model", choices=("item-knn", "popularity"), default="item-knn")
-    p.add_argument("--neighbours", type=int, default=3, help="item-kNN's k (ml-1m's validation choice is 3)")
-    p.add_argument("--shrink", type=float, default=10.0)
-    p.add_argument("--k", type=int, default=10)
+    p.add_argument("--neighbours", type=_positive_int, default=3, help="item-kNN's k (ml-1m's validation choice is 3)")
+    p.add_argument("--shrink", type=_shrink, default=10.0)
+    p.add_argument("--k", type=_positive_int, default=10)
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     p.set_defaults(run=_recommend)
     return parser

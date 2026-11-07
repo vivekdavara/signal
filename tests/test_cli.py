@@ -37,3 +37,11 @@ def test_the_leakage_command_writes_json(tmp_path: Path, capsys: pytest.CaptureF
     assert cli.main(["leakage", "synthetic", "--data-dir", str(tmp_path), "--out", str(out)]) == 0
     assert "popularity ndcg@10: global " in capsys.readouterr().out
     assert json.loads(out.read_text())["dataset"] == "synthetic"
+
+
+@pytest.mark.parametrize("grid", ["10:nan", "10:inf", "10:-0.5", "1.5:0", ":3", "10:"])
+def test_bad_grid_values_are_usage_errors(grid: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["baselines", "synthetic", "--data-dir", str(tmp_path), "--grid", grid])
+    assert exc.value.code == 2
+    assert "expected k:shrink" in capsys.readouterr().err

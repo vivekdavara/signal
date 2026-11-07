@@ -178,6 +178,31 @@ CI: the workflow has two jobs (lint, types and tests; then the whole pipeline on
 with the committed results). The GitHub repository could not be created from the scheduled session, so neither has
 run on GitHub; every step was rehearsed in a fresh clone with a fresh virtualenv on macOS.
 
+## Review of day 1
+
+One review agent read the code at `914dcdf` (16:20-16:34, about 14 minutes, its own worktree, a correctness brief:
+find where the code disagrees with DESIGN.md or itself, prove each defect with a failing test). Its tests are in
+`tests/review_d1/`, each file's docstrings stating the defect; all pass now.
+
+| Finding | Fix |
+|---|---|
+| **Ties decided by rounding.** 3/√27 and 1/√3 are equal but differ in a double's last bit, so item-kNN kept the wrong neighbour; float32 score sums put a tied item 2nd. | Similarities as `sqrt(co²/(n_i n_j))` with no shrink, rounded to 2^-32 and kept as integers; scores are exact integer sums (`6c8847f`). The second case is only bounded: sums of *different* square roots equal as reals can still differ by a unit, and the test pins that. |
+| An unclosed quote in movies.csv swallowed the next line (a movie vanished silently); a `csv.Error` escaped with no file or line. | One CSV record per line; errors name the line (`e6766e5`). |
+| ml-1m `Foo (1999):::Comedy` read as the genre `:Comedy`. | The last `::` ends the title; a title holding `::` is refused (`e6766e5`). |
+| A genre with a tab saved fine and broke `load`. | Control characters refused by the parsers and by `save` (`e6766e5`, `005a9e5`). |
+| `load` checked only the files the manifest listed. | The manifest must list exactly the expected files (`005a9e5`). |
+| Replacing a processed directory deleted the old one first. | Old renamed aside, put back on failure (`005a9e5`; the reviewer's injection failed the put-back too, so its setup was narrowed, not its assertion). |
+| A bad `--grid`, an offline download and a corrupt manifest ended in tracebacks. | argparse validates `--grid`; `OSError` from a fetch and a bad manifest are one-line errors (`247cf6a`, `005a9e5`). |
+
+It also listed about 30 mutants no test killed. The worst: **swapping the validation items for the test items in
+tuning survived every test**, so the protocol's central rule was untested. Each listed survivor now fails a test
+(`d10cb54`, `03223f5`; re-applied from a copy and restored byte for byte), except `extract`'s `is_dir()` check,
+which was unreachable and is removed.
+
+My own checks found three things the reviewer didn't: the parsers' CRLF and Latin-1 findings (above), the grid
+choosing its own edge three times, and two claims of mine that measurement contradicted (the median history was 56,
+not 70; popularity's slower evaluation is the sort, not ties), each corrected in a commit that says so.
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are

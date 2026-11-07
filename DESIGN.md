@@ -82,6 +82,10 @@ the usual popularity, compared with a paired bootstrap. The README reports both.
 `val` and `test`, `user_raw_ids`, `item_raw_ids`), `items.tsv` (index, raw id, title, genres) and `manifest.json`
 (the source archive's SHA-256, the parameters, the counts, and the SHA-256 of every file). `np.save` is
 byte-deterministic, so the same inputs and parameters give the same bytes, and the manifest's hashes prove it.
+Loading requires the manifest to list exactly those files and every hash to match. Titles and genres may not hold
+control characters (the parsers refuse them too). Replacing an existing directory renames the old one aside, the
+new one in, then deletes the old one; if the second rename fails the old one is put back. (POSIX has no atomic swap
+of two directories: a crash between the renames leaves the old one beside it under a hidden name.)
 
 ## Evaluation protocol
 
@@ -107,6 +111,11 @@ byte-deterministic, so the same inputs and parameters give the same bytes, and t
   liked each; the diagonal is zero; each movie keeps its `k` most similar neighbours. A user's score for movie i is the
   sum of `sim(j, i)` over their history items j. The similarity is computed in column blocks (`X^T X[:, block]`), so
   memory is O(movies × block) rather than O(movies²). `k` and `shrink` are tuned on validation.
+- **Exact ties.** "Ties to the smaller index" must not be decided by floating-point rounding (review round 1 found
+  that it was). With no shrink a similarity is computed as `sqrt(co² / (n_i n_j))`, so equal rationals give the same
+  double; every similarity is rounded to a multiple of 2^-32 and kept as an integer; a score is an exact integer sum.
+  Equal similarities are therefore equal and no score depends on summation order. Not guaranteed, because no finite
+  representation can: two sums of *different* square roots that are equal as reals may differ by a unit.
 
 ## Day 2: two-tower retriever
 

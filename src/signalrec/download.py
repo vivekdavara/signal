@@ -9,6 +9,7 @@ half-extracted dataset that looks complete.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import shutil
 import tempfile
@@ -104,8 +105,10 @@ def fetch(archive: Archive, zip_dir: Path, opener: Opener = _open_url) -> Path:
                         raise DownloadError(f"{archive.url}: more than the pinned {archive.size} bytes; stopped")
                     digest.update(chunk)
                     out.write(chunk)
-        except OSError as exc:  # URLError, timeouts, a dropped connection, a full disk
-            raise DownloadError(f"{archive.url}: {exc}") from exc
+        # URLError, timeouts, a refused connection, a full disk (OSError); a body cut short or a garbled status line
+        # (http.client.IncompleteRead, BadStatusLine: HTTPException, which is not an OSError).
+        except (OSError, http.client.HTTPException) as exc:
+            raise DownloadError(f"{archive.url}: {type(exc).__name__}: {exc}") from exc
         if size != archive.size:
             raise DownloadError(f"{archive.url}: got {size} bytes, pinned {archive.size}")
         if digest.hexdigest() != archive.sha256:

@@ -19,6 +19,8 @@ than 2^-32 (about 2.3e-10) count as tied; that is the resolution of the "similar
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import numpy.typing as npt
 import scipy.sparse as sp
@@ -56,8 +58,8 @@ def neighbours(history: sp.csr_matrix, k: int, shrink: float, block: int = 512) 
     """
     if k < 1:
         raise ValueError("k must be at least 1")
-    if shrink < 0:
-        raise ValueError("shrink must be non-negative")
+    if not math.isfinite(shrink) or shrink < 0:
+        raise ValueError(f"shrink must be a non-negative number, got {shrink}")
     if block < 1:
         raise ValueError("block must be at least 1")
     x = sp.csc_matrix(history, dtype=np.float32)
@@ -100,6 +102,8 @@ class ItemKNN:
     name = "item-knn"
 
     def __init__(self, k: int = 100, shrink: float = 0.0, block: int = 512) -> None:
+        if k < 1 or block < 1 or not math.isfinite(shrink) or shrink < 0:
+            raise ValueError(f"item-kNN needs k >= 1, block >= 1 and a finite shrink >= 0 (k={k}, shrink={shrink})")
         self.k = k
         self.shrink = shrink
         self.block = block

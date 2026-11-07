@@ -241,3 +241,27 @@ def test_a_cached_zip_of_the_right_size_but_wrong_bytes_is_fetched_again(tmp_pat
     zips.mkdir()
     (zips / "ml-x.zip").write_bytes(b"\0" * served.size)
     assert dl.sha256_of(dl.fetch(served, zips)) == served.sha256
+
+
+def test_a_member_whose_deflate_stream_is_corrupt_is_a_download_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 0xFF bytes over the compressed data make zlib fail ("invalid block type") before any CRC check could; the
+    # archive is pinned to the corrupt bytes, so only extraction can notice.
+    src = tmp_path / "served"
+    src.mkdir()
+    data = bytearray(make_zip(src / "ml-x.zip", {"ml-x/ratings.csv": RATINGS * 50, "ml-x/movies.csv": MOVIES}))
+    info = zipfile.ZipFile(src / "ml-x.zip").getinfo("ml-x/ratings.csv")
+    start = info.header_offset + 30 + len(info.filename)
+    data[start : start + info.compress_size] = b"\xff" * info.compress_size
+    (src / "ml-x.zip").write_bytes(bytes(data))
+    install(monkeypatch, archive_for(src / "ml-x.zip"))
+    with pytest.raises(DownloadError, match="invalid block type"):
+        dl.download("ml-x", tmp_path / "data")
+    assert list((tmp_path / "data" / "raw").iterdir()) == []
+
+
+def test_a_failed_fetch_names_the_url(tmp_path: Path) -> None:
+    archive = Archive("ml-x", (tmp_path / "missing.zip").as_uri(), "0" * 64, 1, (("ml-x/a", "a"),))
+    with pytest.raises(DownloadError, match=re.escape(archive.url)):
+        dl.fetch(archive, tmp_path / "zips")

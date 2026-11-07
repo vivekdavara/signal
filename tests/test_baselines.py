@@ -11,9 +11,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
+from signalrec import baselines, movielens, prepare, synthetic
 from signalrec import evaluate as ev
-from signalrec import movielens, prepare, synthetic
-from signalrec.baselines import SCALE, ItemKNN, Popularity, neighbours
+from signalrec.baselines import MAX_HISTORY, SCALE, ItemKNN, Popularity, neighbours
 
 
 def dense_neighbours(x: np.ndarray, k: int, shrink: float) -> np.ndarray:
@@ -120,3 +120,20 @@ def test_only_positive_similarities_are_stored() -> None:
     s = neighbours(sp.csr_matrix(x), k=5, shrink=0.0)
     assert (s.data > 0).all()
     assert s.nnz == 4
+
+
+def test_scores_stay_exact_up_to_the_history_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A score sums at most MAX_HISTORY similarities of at most SCALE units each; that must fit a double exactly.
+    assert MAX_HISTORY * SCALE <= 2**53
+    monkeypatch.setattr(baselines, "MAX_HISTORY", 3)
+    at_limit = sp.csr_matrix(np.array([[1, 1, 1, 0], [0, 1, 0, 1]], dtype=np.float32))
+    ItemKNN(k=2).fit(at_limit)
+    over = sp.csr_matrix(np.array([[1, 1, 1, 1], [0, 1, 0, 1]], dtype=np.float32))
+    with pytest.raises(ValueError, match="history of 4 movies"):
+        ItemKNN(k=2).fit(over)
+
+
+@pytest.mark.parametrize(("k", "shrink"), [(0, 0.0), (5, -1.0), (5, float("nan")), (5, float("inf"))])
+def test_item_knn_refuses_bad_parameters_when_built(k: int, shrink: float) -> None:
+    with pytest.raises(ValueError, match="item-kNN needs"):
+        ItemKNN(k=k, shrink=shrink)

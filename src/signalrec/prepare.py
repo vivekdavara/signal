@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ import numpy.typing as npt
 import scipy.sparse as sp
 
 from signalrec.movielens import Dataset, Movie
+
+# Tabs and other control characters can't be stored in items.tsv (the parsers refuse them too).
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 IntArray = npt.NDArray[np.int64]
 BoolArray = npt.NDArray[np.bool_]
@@ -186,13 +190,18 @@ def counts(p: Prepared) -> dict[str, int]:
 
 
 def save(p: Prepared, out_dir: Path, dataset: str, sources: dict[str, str], params: Params) -> dict[str, Any]:
-    """Write ``out_dir`` atomically (a temporary directory renamed into place) and return the manifest.
+    """Write ``out_dir`` and return the manifest.
+
+    Everything is written to a temporary directory first. With no ``out_dir`` yet, one rename puts it in place. To
+    replace an existing ``out_dir`` (POSIX can't swap two directories atomically) the old one is renamed aside, the new
+    one renamed in, and only then the old one deleted; if the second rename fails, the old one is renamed back. A
+    crash between the two renames leaves the old directory beside ``out_dir`` as ``.<name>-old-*``, never a mix.
 
     ``sources`` maps each raw input file's name to its SHA-256, so a manifest names exactly what it was built from.
     """
-    for title in p.titles:
-        if any(c in title for c in "\t\r\n"):
-            raise PrepareError(f"title {title!r} holds a tab or line break")
+    for text in (*p.titles, *(g for genres in p.genres for g in genres)):
+        if _CONTROL.search(text):
+            raise PrepareError(f"{text!r} holds a tab, line break or other control character")
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=f".{out_dir.name}-", dir=out_dir.parent))
     try:
@@ -216,17 +225,40 @@ def save(p: Prepared, out_dir: Path, dataset: str, sources: dict[str, str], para
             "files": {name: sha256_of(tmp / name) for name in files},
         }
         (tmp / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-        if out_dir.exists():
-            shutil.rmtree(out_dir)
-        os.replace(tmp, out_dir)
+        _replace_dir(tmp, out_dir)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
     return manifest
 
 
+def _replace_dir(new: Path, target: Path) -> None:
+    if not target.exists():
+        os.replace(new, target)
+        return
+    old = Path(tempfile.mkdtemp(prefix=f".{target.name}-old-", dir=target.parent))
+    os.replace(target, old)  # onto the empty directory mkdtemp made
+    try:
+        os.replace(new, target)
+    except BaseException:
+        os.replace(old, target)
+        raise
+    shutil.rmtree(old)
+
+
+EXPECTED_FILES = frozenset({*(f"{name}.npy" for name in ARRAYS), "items.tsv"})
+
+
 def read_manifest(directory: Path) -> dict[str, Any]:
-    manifest: dict[str, Any] = json.loads((directory / "manifest.json").read_text())
+    path = directory / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise PrepareError(f"{path} is missing (run signalrec prepare first)") from None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PrepareError(f"{path}: unreadable: {exc}") from None
+    if not isinstance(manifest, dict):
+        raise PrepareError(f"{path}: not a JSON object")
     return manifest
 
 
@@ -235,7 +267,11 @@ def load(directory: Path) -> Prepared:
     manifest = read_manifest(directory)
     if manifest.get("format") != FORMAT_VERSION:
         raise PrepareError(f"{directory}: format {manifest.get('format')!r}, expected {FORMAT_VERSION}")
-    for name, digest in manifest["files"].items():
+    files = manifest.get("files")
+    if not isinstance(files, dict) or set(files) != EXPECTED_FILES:
+        listed = sorted(files) if isinstance(files, dict) else files
+        raise PrepareError(f"{directory}: the manifest lists {listed}, expected {sorted(EXPECTED_FILES)}")
+    for name, digest in files.items():
         if sha256_of(directory / name) != digest:
             raise PrepareError(f"{directory / name}: SHA-256 differs from manifest.json")
     arrays = {name: np.load(directory / f"{name}.npy", allow_pickle=False) for name in ARRAYS}

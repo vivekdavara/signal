@@ -207,7 +207,7 @@ def test_saving_replaces_an_older_directory(tmp_path: Path, synthetic_prepared: 
 
 def test_a_title_with_a_tab_is_refused(tmp_path: Path, synthetic_prepared: prepare.Prepared) -> None:
     bad = prepare.Prepared(**{**synthetic_prepared.__dict__, "titles": ("A\tB", *synthetic_prepared.titles[1:])})
-    with pytest.raises(PrepareError, match="tab or line break"):
+    with pytest.raises(PrepareError, match="tab, line break or other control character"):
         prepare.save(bad, tmp_path / "out", "synthetic", {}, Params())
     assert list(tmp_path.iterdir()) == []
 
@@ -239,3 +239,21 @@ def test_the_real_datasets_prepare_to_their_pinned_counts(name: str) -> None:
     p = prepare.prepare(movielens.load(name, real_raw_dir(name)), Params())
     assert prepare.counts(p) == REAL_COUNTS[name]
     assert (p.val_times <= p.test_times).all()
+
+
+def test_replacing_a_directory_leaves_only_the_new_one(tmp_path: Path, synthetic_prepared: prepare.Prepared) -> None:
+    prepare.save(synthetic_prepared, tmp_path / "out", "first", {}, Params())
+    prepare.save(synthetic_prepared, tmp_path / "out", "second", {}, Params())
+    assert prepare.read_manifest(tmp_path / "out")["dataset"] == "second"
+    assert [p.name for p in tmp_path.iterdir()] == ["out"]
+
+
+def test_a_missing_or_corrupt_manifest_is_a_prepare_error(tmp_path: Path) -> None:
+    with pytest.raises(PrepareError, match="missing"):
+        prepare.load(tmp_path)
+    (tmp_path / "manifest.json").write_text("[1, 2]")
+    with pytest.raises(PrepareError, match="not a JSON object"):
+        prepare.load(tmp_path)
+    (tmp_path / "manifest.json").write_text('{"form')
+    with pytest.raises(PrepareError, match="unreadable"):
+        prepare.load(tmp_path)

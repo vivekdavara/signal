@@ -52,7 +52,8 @@ Bug's Life, Hercules, Mulan); item-kNN (k=3) puts Sleeping Beauty and Pinocchio 
 such as The Shawshank Redemption; popularity's top 10 has no animation at all. The held-out test movie is Pocahontas,
 which neither list contains.
 
-`ml-latest-small` works the same way. `signalrec synthetic` writes a **synthetic** dataset in ml-latest-small's file
+`make data` downloads and prepares both datasets; `make results` regenerates every number in the results below
+(the benchmark wants a quiet machine). `ml-latest-small` works the same way as ml-1m. `signalrec synthetic` writes a **synthetic** dataset in ml-latest-small's file
 format (`signalrec prepare synthetic`, `signalrec baselines synthetic`); the tests use it, and no number from it is a
 claim about real users.
 

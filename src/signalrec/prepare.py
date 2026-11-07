@@ -14,7 +14,7 @@ import os
 import re
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +80,9 @@ class Prepared:
     item_raw_ids: IntArray
     titles: tuple[str, ...]
     genres: tuple[tuple[str, ...], ...]
+    # The manifest ``load`` checked these arrays against, so a report quotes the same one rather than re-reading a
+    # file a concurrent ``prepare`` may have replaced. None for data that wasn't loaded from disk.
+    manifest: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
     @property
     def n_users(self) -> int:
@@ -199,6 +202,10 @@ def save(p: Prepared, out_dir: Path, dataset: str, sources: dict[str, str], para
 
     ``sources`` maps each raw input file's name to its SHA-256, so a manifest names exactly what it was built from.
     """
+    # A symlink or a file where the directory goes can't be swapped by renames (rename onto it fails or replaces the
+    # link, not what it points to): refuse before writing anything.
+    if out_dir.is_symlink() or (out_dir.exists() and not out_dir.is_dir()):
+        raise PrepareError(f"{out_dir} is a symlink or a file; remove it or choose another --data-dir")
     for text in (*p.titles, *(g for genres in p.genres for g in genres)):
         if _CONTROL.search(text):
             raise PrepareError(f"{text!r} holds a tab, line break or other control character")
@@ -284,8 +291,10 @@ def _check_manifest_fields(directory: Path, manifest: dict[str, Any], dataset: s
     sources = manifest.get("sources")
     if not isinstance(sources, dict) or not all(isinstance(v, str) for v in sources.values()):
         raise PrepareError(f"{directory}: the manifest's sources are {sources!r}")
-    if not isinstance(manifest.get("counts"), dict):
-        raise PrepareError(f"{directory}: the manifest has no counts")
+    manifest_counts = manifest.get("counts")
+    # type() and not isinstance, as for format: 60.0 == 60 and False == 0, and neither is a count.
+    if not isinstance(manifest_counts, dict) or not all(type(v) is int for v in manifest_counts.values()):
+        raise PrepareError(f"{directory}: the manifest's counts are {manifest_counts!r}")
 
 
 def load(directory: Path, dataset: str | None = None) -> Prepared:
@@ -313,7 +322,7 @@ def load(directory: Path, dataset: str | None = None) -> Prepared:
             _, _, title, genre_field = line.rstrip("\n").split("\t")
             titles.append(title)
             genres.append(tuple(genre_field.split("|")) if genre_field else ())
-    prepared = Prepared(**arrays, titles=tuple(titles), genres=tuple(genres))
+    prepared = Prepared(**arrays, titles=tuple(titles), genres=tuple(genres), manifest=manifest)
     if counts(prepared) != manifest["counts"]:
         raise PrepareError(f"{directory}: the manifest's counts {manifest['counts']} disagree with the arrays")
     return prepared

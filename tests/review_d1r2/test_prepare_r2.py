@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -43,15 +44,22 @@ def test_a_failed_first_rename_leaves_no_empty_old_directory(tmp_path: Path) -> 
     Expected: whatever save does with the link, nothing new beside it and the link's target untouched.
     Actual: save raises IsADirectoryError and ``.out-old-XXXXXXXX`` (empty) stays in ``processed/``.
     """
+    # Adapted after review round 3: save now refuses a symlinked out_dir before any rename (a one-line error), so the
+    # symlink no longer reaches this path. The first rename's failure is injected instead; the assertion is kept.
     processed = tmp_path / "processed"
-    processed.mkdir()
-    elsewhere = tmp_path / "bigger-disk" / "out"
-    elsewhere.mkdir(parents=True)
-    (elsewhere / "earlier.txt").write_text("earlier result\n")
     out_dir = processed / "out"
-    out_dir.symlink_to(elsewhere, target_is_directory=True)
-    with contextlib.suppress(OSError):
-        prepare.save(small_prepared(), out_dir, "synthetic", {}, Params())
+    prepare.save(small_prepared(), out_dir, "synthetic", {}, Params())
+    real_replace = os.replace
+
+    def failing_first_rename(src: str | Path, dst: str | Path) -> None:
+        if Path(src) == out_dir:
+            raise OSError("injected: the old directory can't be moved aside")
+        real_replace(src, dst)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(os, "replace", failing_first_rename)
+        with contextlib.suppress(OSError):
+            prepare.save(small_prepared(), out_dir, "synthetic", {}, Params())
     assert sorted(p.name for p in processed.iterdir()) == ["out"]
 
 

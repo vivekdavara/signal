@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
+import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from signalrec import download, movielens, prepare, synthetic
+from signalrec import download, experiment, movielens, prepare, synthetic
 
 DEFAULT_DATA = Path("data")
 
@@ -40,6 +42,34 @@ def _prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _baselines(args: argparse.Namespace) -> int:
+    processed = args.data_dir / "processed" / args.dataset
+    manifest = prepare.read_manifest(processed)
+    prepared = prepare.load(processed)
+    grid = experiment.DEFAULT_GRID if args.grid is None else tuple(_grid(args.grid))
+    result = {
+        "command": "signalrec " + shlex.join(args.argv),
+        "dataset": args.dataset,
+        "prepared": {"params": manifest["params"], "counts": manifest["counts"], "sources": manifest["sources"]},
+        **experiment.run(prepared, grid),
+    }
+    out = args.out or Path("results") / args.dataset / "baselines.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    print(experiment.table(result))
+    print(f"wrote {out}")
+    return 0
+
+
+def _grid(spec: str) -> list[tuple[int, float]]:
+    """Parse k:shrink pairs: 10:0,50:10 -> [(10, 0.0), (50, 10.0)]."""
+    pairs = []
+    for part in spec.split(","):
+        k, shrink = part.split(":")
+        pairs.append((int(k), float(shrink)))
+    return pairs
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="signalrec", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -63,11 +93,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-user-positives", type=int, default=prepare.Params.min_user_positives)
     p.add_argument("--min-item-positives", type=int, default=prepare.Params.min_item_positives)
     p.set_defaults(run=_prepare)
+
+    p = sub.add_parser("baselines", help="tune item-kNN on validation, report both baselines on test")
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    p.add_argument("--out", type=Path, help="default: results/<dataset>/baselines.json")
+    p.add_argument("--grid", help="item-kNN k:shrink pairs, e.g. 10:0,50:10 (default: 9 k values x 3 shrinks)")
+    p.set_defaults(run=_baselines)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = build_parser().parse_args(argv)
+    args.argv = argv
     try:
         code: int = args.run(args)
     except (download.DownloadError, movielens.ParseError, prepare.PrepareError, FileNotFoundError) as exc:

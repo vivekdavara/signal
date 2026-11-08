@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from signalrec import cli, movielens, prepare, synthetic
 from signalrec import evaluate as ev
-from signalrec import movielens, prepare, synthetic
+from signalrec import twotower as tt
 from signalrec.baselines import ItemKNN
 from signalrec.prepare import Prepared
 
@@ -56,3 +59,33 @@ def test_recent_knn_scores_only_from_the_recent_positives(prepared: Prepared) ->
         (last,) = recent[u].indices.tolist()
         row = knn.similarity[[last]].toarray()[0].astype(np.float64)
         assert np.array_equal(scorer.score(np.array([u]))[0], row)
+
+
+def test_the_script_scores_validation_with_training_history(tmp_path: Path) -> None:
+    # Review round 2: main() had no test, so reading the test items (or validation in the history) survived. Each row
+    # is recomputed independently on the validation items.
+    assert cli.main(["synthetic", "--data-dir", str(tmp_path), "--users", "60", "--items", "90"]) == 0
+    assert cli.main(["prepare", "synthetic", "--data-dir", str(tmp_path)]) == 0
+    source = tmp_path / "twotower.json"
+    args = ["twotower", "synthetic", "--data-dir", str(tmp_path), "--grid", "0.1:on", "--epochs", "2", "--seeds", "0"]
+    assert cli.main([*args, "--knn-grid", "5:0", "--quiet", "--out", str(source)]) == 0
+    out = tmp_path / "recency.json"
+    assert (
+        recency_ablation.main(["synthetic", "--data-dir", str(tmp_path), "--from", str(source), "--out", str(out)]) == 0
+    )
+    rows = {row["model"]: row for row in json.loads(out.read_text())["rows"]}
+
+    p = prepare.load(tmp_path / "processed" / "synthetic", "synthetic")
+    history = p.history(include_val=False)
+    knn = ItemKNN(k=5, shrink=0.0)
+    knn.fit(history)
+    assert rows["item-knn, last all"]["ndcg@10"] == ev.evaluate(knn, history, p.val_items, "val").summary()["ndcg@10"]
+    config = cli._reported_config(source, "synthetic")
+    seq = tt.sequences(p, include_val=False)
+    net, _ = tt.train(seq, tt.genre_matrix(p.genres)[0], replace(config, max_history=5))
+    want = ev.evaluate(tt.embed(net, seq, 5), history, p.val_items, "val").summary()["ndcg@10"]
+    assert rows["two-tower, last 5"]["ndcg@10"] == want
+    # The reference rows' intervals are against themselves: [0, 0].
+    key = "minus the reported history length, ndcg@10, paired ci95"
+    assert rows["item-knn, last all"][key] == [0.0, 0.0]
+    assert rows[f"two-tower, last {config.max_history}"][key] == [0.0, 0.0]

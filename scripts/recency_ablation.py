@@ -92,7 +92,10 @@ def main(argv: list[str]) -> int:
         per_user[label] = ev.ndcg_at(evaluation.ranks, 10)
         rows.append({"model": label, **{k: v for k, v in evaluation.summary().items() if "@10" in k or "@50" in k}})
         print(f"{label}: ndcg@10 {rows[-1]['ndcg@10']:.4f}", file=sys.stderr, flush=True)
-    for n in TT_LENGTHS:
+    # The reported history length is always one of the rows: it is the reference (review round 2: the reference was
+    # hard-coded as 50, wrong for a results file with another max_history).
+    tt_lengths = sorted({*TT_LENGTHS, config.max_history})
+    for n in tt_lengths:
         net, _ = tt.train(seq, genres, replace(config, max_history=n))
         evaluation = ev.evaluate(tt.embed(net, seq, n), history, p.val_items, "val")
         label = f"two-tower, last {n}"
@@ -100,7 +103,10 @@ def main(argv: list[str]) -> int:
         rows.append({"model": label, **{k: v for k, v in evaluation.summary().items() if "@10" in k or "@50" in k}})
         print(f"{label}: ndcg@10 {rows[-1]['ndcg@10']:.4f}", file=sys.stderr, flush=True)
 
-    reference = {"item-knn": per_user["item-knn, last all"], "two-tower": per_user["two-tower, last 50"]}
+    reference = {
+        "item-knn": per_user["item-knn, last all"],
+        "two-tower": per_user[f"two-tower, last {config.max_history}"],
+    }
     for row in rows:
         family = "item-knn" if row["model"].startswith("item-knn") else "two-tower"
         low, high = ev.paired_bootstrap_ci(per_user[row["model"]], reference[family], seed=SEED)

@@ -24,14 +24,19 @@ KS = (10, 20, 50)
 BATCH = 512
 
 
-class Recommender(Protocol):
-    name: str
+class Scorer(Protocol):
+    """Anything evaluation can rank with: a fitted baseline, or a trained model's exported embeddings."""
 
-    def fit(self, history: sp.csr_matrix) -> None:
-        """Learn from the binary user × item history matrix."""
+    @property
+    def name(self) -> str: ...
 
     def score(self, users: IntArray) -> Scores:
-        """Scores for every item, one row per user, for users of the matrix ``fit`` saw."""
+        """Scores for every item, one row per user."""
+
+
+class Recommender(Scorer, Protocol):
+    def fit(self, history: sp.csr_matrix) -> None:
+        """Learn from the binary user × item history matrix."""
 
 
 def ranks(scores: Scores, history: sp.csr_matrix, targets: IntArray) -> IntArray:
@@ -94,7 +99,7 @@ class Evaluation:
 
 
 def evaluate(
-    model: Recommender,
+    model: Scorer,
     history: sp.csr_matrix,
     targets: IntArray,
     split: str,

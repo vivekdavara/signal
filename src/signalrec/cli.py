@@ -10,7 +10,18 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from signalrec import download, experiment, experiment_twotower, leakage, movielens, prepare, recommend, synthetic
+from signalrec import (
+    download,
+    experiment,
+    experiment_twotower,
+    leakage,
+    leakage_twotower,
+    movielens,
+    prepare,
+    recommend,
+    synthetic,
+)
+from signalrec import twotower as tt
 from signalrec.baselines import ItemKNN, Popularity
 
 DEFAULT_DATA = Path("data")
@@ -116,6 +127,53 @@ def _leakage(args: argparse.Namespace) -> int:
         low, high = cell["difference ci95"]
         print(
             f"popularity {metric}: global {cell['global (leaky)']:.4f}, as of test time {cell['as of test time']:.4f}, "
+            f"difference {cell['difference']:+.4f} [{low:+.4f}, {high:+.4f}]"
+        )
+    print(f"wrote {out}")
+    return 0
+
+
+def _reported_config(path: Path, dataset: str) -> tt.Config:
+    """The configuration a two-tower results file reports on test: the validation choice, the fixed settings, the
+    first seed."""
+    try:
+        result = json.loads(path.read_text())
+        if result["dataset"] != dataset:
+            raise prepare.PrepareError(f"{path} holds {result['dataset']!r}, not {dataset!r}")
+        chosen, fixed = result["chosen"]["two-tower"], result["fixed"]
+        config = tt.Config(
+            **fixed,
+            temperature=chosen["temperature"],
+            logq=chosen["logq"],
+            epochs=chosen["epochs"],
+            seed=result["test"]["two-tower"]["seed"],
+        )
+        config.check()
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, prepare.PrepareError):
+            raise
+        raise prepare.PrepareError(f"{path}: not a two-tower results file ({exc!r}); run signalrec twotower") from None
+    return config
+
+
+def _leakage_twotower(args: argparse.Namespace) -> int:
+    processed = args.data_dir / "processed" / args.dataset
+    source = args.source or Path("results") / args.dataset / "twotower.json"
+    config = _reported_config(source, args.dataset)
+    result = {
+        "command": "signalrec " + shlex.join(args.argv),
+        "dataset": args.dataset,
+        "configuration from": str(source),
+        **leakage_twotower.run(prepare.load(processed, args.dataset), config, args.buckets),
+    }
+    out = args.out or Path("results") / args.dataset / "leakage-twotower.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    for metric, cell in result[leakage_twotower.COMPARISON].items():
+        low, high = cell["difference ci95"]
+        print(
+            f"two-tower {metric}: leaky {cell[leakage_twotower.LEAKY]:.4f}, "
+            f"as of the cut {cell[leakage_twotower.AS_OF]:.4f}, "
             f"difference {cell['difference']:+.4f} [{low:+.4f}, {high:+.4f}]"
         )
     print(f"wrote {out}")
@@ -243,6 +301,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     p.add_argument("--out", type=Path, help="default: results/<dataset>/leakage.json")
     p.set_defaults(run=_leakage)
+
+    p = sub.add_parser(
+        "leakage-twotower", help="retrain the reported two-tower model as of test-time buckets: what the leak is worth"
+    )
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    p.add_argument("--from", dest="source", type=Path, help="default: results/<dataset>/twotower.json")
+    p.add_argument("--buckets", type=_positive_int, default=10)
+    p.add_argument("--out", type=Path, help="default: results/<dataset>/leakage-twotower.json")
+    p.set_defaults(run=_leakage_twotower)
 
     p = sub.add_parser("recommend", help="one user's recent likes and a model's top k, by title")
     p.add_argument("dataset", choices=sorted(movielens.FORMATS))

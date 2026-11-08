@@ -136,6 +136,34 @@ of two directories: a crash between the renames leaves the old one beside it und
   a higher mean. Training seeds are a source of noise too: the chosen configuration is trained with three seeds and
   the spread reported.
 
+### As built (day 2)
+
+- **Towers** (`twotower.py`). Item: `id embedding + genre_mix @ genre_table`, where a movie's genre row averages its
+  genres (a movie with none gets no genre vector), then `x + MLP(x)` (Linear 64→128, ReLU, Linear 128→64) and L2
+  normalisation. User: the mean of the history table's rows over the non-padding positions (row `n_items` is padding:
+  zero, never updated), then its own residual MLP and L2 normalisation. Embeddings start at N(0, 0.1²). The residual
+  form means each tower starts as its embeddings and learns a correction.
+- **Examples.** A user's first positive has no earlier positive, so it is never a target; every later one is, with
+  the up to 50 positives just before it (left-padded). ml-1m: 556,274 examples when tuning (562,308 training
+  positives minus one per user), 562,308 for the test run (the validation item adds one per user). Histories are
+  sliced from one concatenated array per batch, so no example table is materialised.
+- **Loss** (`in_batch_loss`). `logits = U Vᵀ / τ − log q(column's movie)`, cross-entropy with the diagonal as the
+  label. `q` is each movie's exact share of the training targets (one pass over the data, not Yi et al.'s streaming
+  estimate, which is for data that doesn't fit). A column holding the same movie as the row's target is masked to
+  −∞ for that row: an accidental hit is not a negative.
+- **Training.** Adam, learning rate 3e-3, batch 1,024, shuffled each epoch by `numpy.random.default_rng(seed)`; the
+  weights start from `torch.manual_seed(seed)`. Same seed, same machine → same weights (a test). A final batch of one
+  example is skipped (no negatives).
+- **Scoring.** The towers are exported to NumPy (`Embeddings`): one vector per movie and one per user from the last 50
+  positives of their history at that point (training for validation, training + validation for test). Scores are
+  float64 dot products of the float32 vectors; evaluation is exactly the baselines' (`evaluate.Scorer`).
+- **Selection** (`experiment_twotower.py`). Fixed: dim 64, hidden 128, batch 1,024, lr 3e-3, 50-item histories.
+  Grid: τ ∈ {0.05, 0.1, 0.2} × logQ on/off, 20 epochs each, validation scored after every epoch. The candidates
+  are the 120 (configuration, epoch) pairs; the choice is the best validation NDCG@10 (ties to the earlier
+  configuration, then epoch). Item-kNN is tuned on its own day-1 grid in the same run and compared paired on
+  validation. Test: the chosen configuration retrained on training + validation for the chosen number of epochs with
+  seeds 0, 1 and 2; seed 0 (the seed the grid used) is the reported row, the other two give the spread.
+
 ## Day 3: FAISS, ranking, the feature store
 
 - **Retrieval.** Item embeddings in FAISS: `IndexFlatIP` (exact) as the reference, then an approximate index (IVF or

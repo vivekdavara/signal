@@ -236,7 +236,13 @@ def _temperature_grid(spec: str) -> list[tuple[float, bool]]:
             temperature = -1.0
         if not sep or q_text not in ("on", "off") or not math.isfinite(temperature) or temperature <= 0:
             raise argparse.ArgumentTypeError(f"{part!r}: expected temperature:on|off with a temperature > 0")
+        try:
+            tt.Config(temperature=temperature).check()  # e.g. so small that 1/temperature overflows float32
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"{part!r}: {exc}") from None
         pairs.append((temperature, q_text == "on"))
+    if len(set(pairs)) != len(pairs):  # 0.1:on,0.10:on is the same model twice
+        raise argparse.ArgumentTypeError(f"{spec!r}: a configuration appears twice")
     return pairs
 
 
@@ -245,8 +251,9 @@ def _seeds(spec: str) -> list[int]:
         seeds = [int(part) for part in spec.split(",")]
     except ValueError:
         seeds = [-1]
-    if any(seed < 0 for seed in seeds) or len(set(seeds)) != len(seeds):
-        raise argparse.ArgumentTypeError(f"{spec!r}: expected distinct integers >= 0, e.g. 0,1,2")
+    # torch.manual_seed takes 0 <= seed < 2^64.
+    if any(not 0 <= seed < 2**64 for seed in seeds) or len(set(seeds)) != len(seeds):
+        raise argparse.ArgumentTypeError(f"{spec!r}: expected distinct integers in [0, 2^64), e.g. 0,1,2")
     return seeds
 
 
@@ -330,7 +337,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.argv = argv
     try:
         code: int = args.run(args)
-    except (download.DownloadError, movielens.ParseError, prepare.PrepareError, FileNotFoundError) as exc:
+    except (
+        download.DownloadError,
+        movielens.ParseError,
+        prepare.PrepareError,
+        tt.TrainingError,
+        FileNotFoundError,
+    ) as exc:
         print(f"signalrec: {exc}", file=sys.stderr)
         return 1
     return code

@@ -126,8 +126,9 @@ of two directories: a crash between the renames leaves the old one beside it und
 - **Loss:** softmax over the batch with in-batch negatives and temperature τ; every other positive in the batch is a
   negative. Popular movies show up as negatives more often than uniform sampling would, so their logits are corrected
   by subtracting `log q(i)`, the movie's sampling probability (Yi et al., 2019, "logQ correction").
-- **Training examples:** for each training positive, the history is the user's earlier positives (by the same time
-  order as the split), capped at the 50 most recent; no future item ever enters its own history.
+- **Training examples:** every training positive except each user's first (which has no earlier positive), with the
+  user's earlier positives as its history (by the same time order as the split), capped at the 50 most recent; no
+  future item ever enters its own history.
 - Same protocol and metrics as the baselines; the model must beat item-kNN on validation to be worth serving.
 - **Choosing hyperparameters under noise.** Day 1 showed that the validation maximum can be noise: item-kNN's k=3 was
   indistinguishable from 7 of 29 grid rows on ml-1m (19 of 29 on ml-latest-small) and k=10 did no worse on test.

@@ -36,6 +36,10 @@ Float32Array = npt.NDArray[np.float32]
 Float64Array = npt.NDArray[np.float64]
 
 
+class TrainingError(ValueError):
+    """The data can't be trained on (too few examples, a movie index outside the catalogue)."""
+
+
 @dataclass(frozen=True)
 class Config:
     dim: int = 64
@@ -59,6 +63,15 @@ class Config:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
+        # Logits are cosines (at most 1) divided by the temperature, in float32: 1/τ must be a finite float32, or the
+        # loss is NaN (review round 1: a temperature of 1e-39 trained "successfully" on NaN losses).
+        if 1.0 / self.temperature > float(np.finfo(np.float32).max):
+            raise ValueError(f"temperature {self.temperature!r} is too small: 1/temperature overflows float32")
+        if type(self.logq) is not bool:
+            raise ValueError(f"logq must be True or False, got {self.logq!r}")
+        # torch.manual_seed takes 0 <= seed < 2^64 (review round 1: 2^64 crashed after the whole grid had trained).
+        if type(self.seed) is not int or not 0 <= self.seed < 2**64:
+            raise ValueError(f"seed must be an integer in [0, 2^64), got {self.seed!r}")
 
     def as_dict(self) -> dict[str, float | int | bool]:
         return asdict(self)
@@ -210,8 +223,8 @@ class Embeddings:
     """Both towers' outputs as NumPy arrays: one row per user (from their latest history) and one per movie.
 
     Scores are dot products (cosine similarities: both sides are unit vectors) of the float32 vectors, computed in
-    float64. Exact ties between two movies' scores are possible only for identical vectors; evaluation breaks any tie
-    by movie index as for every model.
+    float64. Two movies can tie (identical vectors, or different ones at the same angle to the user); evaluation breaks
+    a tie by movie index, as for every model.
     """
 
     users: Float32Array
@@ -267,14 +280,14 @@ def train(
     """
     config.check()
     if seq.items.size and (int(seq.items.min()) < 0 or int(seq.items.max()) >= genres.shape[0]):
-        raise ValueError("a sequence holds a movie index outside the genre matrix")
+        raise TrainingError("a sequence holds a movie index outside the genre matrix")
     torch.manual_seed(config.seed)
     rng = np.random.default_rng(config.seed)
     net = TwoTowerNet(genres, config.dim, config.hidden)
     optimizer = torch.optim.Adam(net.parameters(), lr=config.lr)
     positions, start_of = example_positions(seq)
     if len(positions) < 2:
-        raise ValueError("fewer than 2 training examples: in-batch negatives need a batch of at least 2")
+        raise TrainingError("fewer than 2 training examples: in-batch negatives need a batch of at least 2")
     targets_all = seq.items[positions]
     log_q_all = torch.from_numpy(target_log_q(targets_all, net.n_items)) if config.logq else None
     stats: list[EpochStats] = []

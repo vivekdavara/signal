@@ -68,6 +68,7 @@ class _Validator:
         self.config = config
         self.progress = progress
         self.curve: list[dict[str, Any]] = []
+        self.per_user: list[ev.FloatArray] = []  # every epoch's per-user validation NDCG@10, in curve order
         self.best: Candidate | None = None
 
     def __call__(self, stat: tt.EpochStats, net: tt.TwoTowerNet) -> None:
@@ -84,9 +85,11 @@ class _Validator:
                 "eval_seconds": time.perf_counter() - t0,
             }
         )
+        per_user = ev.ndcg_at(evaluation.ranks, PRIMARY_K)
+        self.per_user.append(per_user)
         # Strictly greater: a tie keeps the earlier epoch.
         if self.best is None or summary[PRIMARY] > self.best.summary[PRIMARY]:
-            self.best = Candidate(self.config, stat.epoch, summary, ev.ndcg_at(evaluation.ranks, PRIMARY_K))
+            self.best = Candidate(self.config, stat.epoch, summary, per_user)
         if self.progress is not None:
             self.progress(
                 f"temperature {self.config.temperature:g} logq {self.config.logq}: epoch {stat.epoch} "
@@ -100,15 +103,17 @@ def tune(
     epochs: int,
     base: tt.Config = DEFAULT_BASE,
     progress: Progress | None = None,
-) -> tuple[list[dict[str, Any]], list[Candidate]]:
+) -> tuple[list[dict[str, Any]], list[Candidate], list[list[ev.FloatArray]]]:
     """Train every configuration on the training positives, scoring validation after every epoch.
 
-    Returns one row per configuration (its learning curve and best epoch) and each configuration's best candidate.
+    Returns one row per configuration (its learning curve and best epoch), each configuration's best candidate, and
+    every epoch's per-user validation NDCG@10 (one list per configuration).
     """
     seq = tt.sequences(p, include_val=False)
     genres, _ = tt.genre_matrix(p.genres)
     rows: list[dict[str, Any]] = []
     bests: list[Candidate] = []
+    per_user: list[list[ev.FloatArray]] = []
     for temperature, logq in grid:
         config = replace(base, temperature=temperature, logq=logq, epochs=epochs)
         validator = _Validator(p, seq, config, progress)
@@ -117,7 +122,34 @@ def tune(
             raise RuntimeError("training ran no epochs")
         rows.append({**_config_label(config), "best epoch": validator.best.epoch, "curve": validator.curve})
         bests.append(validator.best)
-    return rows, bests
+        per_user.append(validator.per_user)
+    return rows, bests, per_user
+
+
+def _check_inputs(
+    grid: Sequence[tuple[float, bool]],
+    epochs: int,
+    seeds: Sequence[int],
+    knn_grid: Sequence[tuple[int, float]],
+    base: tt.Config,
+) -> None:
+    """Everything that could fail later, checked before the first minute of training (review round 1: an empty
+    item-kNN grid, a repeated configuration and an unusable later seed all failed only after tuning)."""
+    if not grid:
+        raise ValueError("the grid is empty")
+    if len(set(grid)) != len(grid):
+        raise ValueError(f"the grid repeats a configuration: {list(grid)}")
+    if not seeds:
+        raise ValueError("no seeds")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError(f"seeds repeat: {list(seeds)}")
+    if not knn_grid:
+        raise ValueError("the item-kNN grid is empty")
+    for temperature, logq in grid:
+        for seed in seeds:
+            replace(base, temperature=temperature, logq=logq, epochs=epochs, seed=seed).check()
+    for k, shrink in knn_grid:
+        ItemKNN(k=k, shrink=shrink)  # its constructor checks k and shrink
 
 
 def _paired(a: ev.Evaluation, b: ev.Evaluation) -> dict[str, Any]:
@@ -139,12 +171,9 @@ def run(
     base: tt.Config = DEFAULT_BASE,
     progress: Progress | None = None,
 ) -> dict[str, Any]:
-    if not grid:
-        raise ValueError("the grid is empty")
-    if not seeds:
-        raise ValueError("no seeds")
+    _check_inputs(grid, epochs, seeds, knn_grid, base)
     base = replace(base, seed=seeds[0])
-    rows, bests = tune(p, grid, epochs, base, progress)
+    rows, bests, per_epoch = tune(p, grid, epochs, base, progress)
     chosen_index = max(range(len(bests)), key=lambda i: bests[i].summary[PRIMARY])
     chosen = bests[chosen_index]
     for row, candidate in zip(rows, bests, strict=True):
@@ -156,6 +185,15 @@ def run(
         for i, (c, row) in enumerate(zip(bests, rows, strict=True))
         if i != chosen_index and row[DIAGNOSTIC][0] <= 0
     ]
+    # Every candidate, not just each configuration's best epoch (review round 1: DESIGN asks for "every candidate").
+    close_candidates = []
+    for i, (row, values) in enumerate(zip(rows, per_epoch, strict=True)):
+        for point, per_user in zip(row["curve"], values, strict=True):
+            low, high = ev.paired_bootstrap_ci(chosen.per_user, per_user, seed=SEED)
+            point[DIAGNOSTIC] = [low, high]
+            if low <= 0 and not (i == chosen_index and point["epoch"] == chosen.epoch):
+                label = {"temperature": row["temperature"], "logq": row["logq"], "epoch": point["epoch"]}
+                close_candidates.append(label)
 
     knn = experiment.tune_item_knn(p, knn_grid)
     knn_best = knn.best
@@ -213,6 +251,11 @@ def run(
         "validation configurations indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)": (
             indistinguishable
         ),
+        "validation candidates indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)": {
+            "of": sum(len(row["curve"]) for row in rows) - 1,
+            "count": len(close_candidates),
+            "candidates": close_candidates,
+        },
         "two-tower minus item-knn, validation ndcg@10 (paired)": versus_knn_val,
         "test": {
             "two-tower": {**experiment._with_intervals(reported), "seed": seeds[0], "train_seconds": reported_seconds},

@@ -151,3 +151,61 @@ Mutation: change the code the test guards (an operator, a constant, a swapped ar
 file from a copy and compare bytes. One example of a test that looked right and wasn't: "the interval brackets the
 mean difference" passed with the arguments of the paired bootstrap swapped, because on 150 users the interval is
 wide enough to hold both d and -d. The test now recomputes the interval independently and compares exactly.
+
+## The two-tower retriever (day 2)
+
+**Describe the model.**
+Two networks that map into the same 64-dimensional space (`twotower.TwoTowerNet`). The item tower takes a movie-id
+embedding plus the average of its genre embeddings, then `x + MLP(x)` and L2 normalisation. The user tower averages
+the embeddings of the user's last 50 liked movies (from its own table, not the item tower's), then its own residual
+MLP and normalisation. The score is the dot product, i.e. a cosine. Retrieval only needs the user vector at request
+time; the movie vectors are precomputed, which is what makes FAISS (day 3) possible.
+
+**Why no user-id embedding?**
+A user is their history. The tower works for a user the model never saw and for a history that changed a minute ago
+(the day-3 feature store keeps the last 50 positives in Redis), with no retraining. The cost: nothing about a user
+outside those 50 movies.
+
+**What is the loss?**
+A softmax over the batch (`in_batch_loss`): for 1,024 (history, movie) examples, each user vector is scored against
+all 1,024 movies, its own movie is the label and the other 1,023 are negatives. It is cheap (one matrix product) and
+needs no sampler. Two corrections: **logQ**, subtracting `log q(movie)` from each column's logit, because a popular
+movie appears as somebody's negative far more often than a rare one, so the uncorrected loss learns to push popular
+movies down; and **accidental hits**: when the same movie is the target of two examples in a batch, it is masked out
+as a negative for both.
+
+**Does logQ matter?**
+More than anything else in the grid. On ml-1m validation at τ=0.1, NDCG@10 is 0.0799 with it and 0.0496 without, and
+the same gap holds at every temperature. Without it the model's top-10 lists cover almost the whole catalogue
+(coverage@10 0.997 against 0.62): it has learned that popular movies are "usually wrong", which is the sampling bias,
+not the users. `results/ml-1m/twotower.json` has every configuration's learning curve.
+
+**How are training examples built, and how do you know nothing leaks?**
+Every training positive except each user's first is a target; its history is the up to 50 positives just before it
+in the split's (time, movie id) order (`example_positions`, `histories`). A batch is sliced from one concatenated array
+by index arithmetic, so no 556,274 × 50 table is built. Tests: a Hypothesis test compares every example's history with
+a brute-force walk; another checks no history contains its target or anything after it; and a spy on `histories` and
+`in_batch_loss` during real training checks that each batch's targets are exactly the movies at its histories' ends.
+That last one was added because review round 1 showed that shifting the history by one position (the target leaking
+into its own history) survived every other test.
+
+**How did you choose the hyperparameters without fooling yourself?**
+The same protocol as the baselines. Six configurations (τ ∈ {0.05, 0.1, 0.2} × logQ on/off), 20 epochs each, scored on
+validation after every epoch; the 120 (configuration, epoch) candidates are compared by validation NDCG@10 and the
+best is chosen. Every candidate gets the paired interval of (chosen - it), so the JSON says how firm the choice is.
+Then the chosen configuration is retrained on training + validation for the chosen number of epochs and scored once on
+test. "Beats item-kNN" is a paired validation interval above zero, not a higher mean.
+
+**How noisy is training?**
+The chosen configuration was trained with seeds 0, 1 and 2 on the test split: NDCG@10 0.0713, 0.0706 and 0.0693.
+The seed spread (0.002) is much smaller than the gap to item-kNN (0.040), and smaller than the bootstrap interval
+over users (about ±0.005).
+
+**Why does it beat item-kNN by so much?**
+See "Where does the lead come from?" in the README: the recency ablation scores item-kNN from only the most recent
+positives and trains the two-tower model with shorter and longer histories, all on validation.
+
+**Why is the evaluation code unchanged?**
+`evaluate.evaluate` takes any `Scorer` (a name and a `score(users)` method). The trained towers are exported to NumPy
+(`twotower.Embeddings`) and scored as float64 dot products, then ranked by exactly the same exact-rank code as the
+baselines, with the same tie rule and the same history exclusion. Nothing model-specific touches the metric.

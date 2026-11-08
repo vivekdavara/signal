@@ -1,0 +1,223 @@
+{
+  "command": "python scripts/recency_ablation.py ml-1m --out results/ml-1m/recency-ablation.json",
+  "dataset": "ml-1m",
+  "split": "validation (training positives as history); post hoc, no choice depends on it",
+  "two-tower configuration": {
+    "dim": 64,
+    "hidden": 128,
+    "temperature": 0.1,
+    "logq": true,
+    "epochs": 17,
+    "batch_size": 1024,
+    "lr": 0.003,
+    "max_history": 50,
+    "seed": 0
+  },
+  "item-knn": {
+    "k": 3,
+    "shrink": 10.0
+  },
+  "longest training history": 1415,
+  "users with more than 200 training positives": 724,
+  "rows": [
+    {
+      "model": "item-knn, last 1",
+      "recall@10": 0.05253563142194233,
+      "ndcg@10": 0.041081463310870626,
+      "coverage@10": 0.48384,
+      "recall@50": 0.06629101756711965,
+      "ndcg@50": 0.04388885300508212,
+      "coverage@50": 0.49472,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        -0.0025394312612307918,
+        0.007406376649763051
+      ]
+    },
+    {
+      "model": "item-knn, last 5",
+      "recall@10": 0.10772290354656944,
+      "ndcg@10": 0.05989047926679888,
+      "coverage@10": 0.61408,
+      "recall@50": 0.12645011600928074,
+      "ndcg@50": 0.06401995789913645,
+      "coverage@50": 0.6528,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.01708421562843323,
+        0.025474289549628475
+      ]
+    },
+    {
+      "model": "item-knn, last 10",
+      "recall@10": 0.10473980775604906,
+      "ndcg@10": 0.05541998596101498,
+      "coverage@10": 0.50368,
+      "recall@50": 0.15694398409015578,
+      "ndcg@50": 0.0680131801243932,
+      "coverage@50": 0.7056,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.01304756132284521,
+        0.020712318015100543
+      ]
+    },
+    {
+      "model": "item-knn, last 20",
+      "recall@10": 0.0957905203844879,
+      "ndcg@10": 0.048132375460240136,
+      "coverage@10": 0.36096,
+      "recall@50": 0.190586675505469,
+      "ndcg@50": 0.06991323838603666,
+      "coverage@50": 0.736,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.00679161270263514,
+        0.012273774244244428
+      ]
+    },
+    {
+      "model": "item-knn, last 50",
+      "recall@10": 0.08352668213457076,
+      "ndcg@10": 0.0402261035780636,
+      "coverage@10": 0.27392,
+      "recall@50": 0.21461716937354988,
+      "ndcg@50": 0.06889358554908075,
+      "coverage@50": 0.69888,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        -0.00014790759889570475,
+        0.0034041252332437403
+      ]
+    },
+    {
+      "model": "item-knn, last 100",
+      "recall@10": 0.08037785880013258,
+      "ndcg@10": 0.038356212747370506,
+      "coverage@10": 0.23616,
+      "recall@50": 0.2079880676168379,
+      "ndcg@50": 0.06628987318702084,
+      "coverage@50": 0.65792,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        -0.0012680200313906988,
+        0.000811936505758226
+      ]
+    },
+    {
+      "model": "item-knn, last 200",
+      "recall@10": 0.08087504143188598,
+      "ndcg@10": 0.038610597486245596,
+      "coverage@10": 0.22176,
+      "recall@50": 0.2088167053364269,
+      "ndcg@50": 0.06648920435497913,
+      "coverage@50": 0.65184,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        -0.00047602715532685073,
+        0.0005995783016734037
+      ]
+    },
+    {
+      "model": "item-knn, last all",
+      "recall@10": 0.08054358634405039,
+      "ndcg@10": 0.038559766324009356,
+      "coverage@10": 0.21664,
+      "recall@50": 0.20765661252900233,
+      "ndcg@50": 0.06624560477984294,
+      "coverage@50": 0.6512,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "model": "two-tower, last 1",
+      "recall@10": 0.19390122638382498,
+      "ndcg@10": 0.11259635761960836,
+      "coverage@10": 0.66944,
+      "recall@50": 0.39410009943652635,
+      "ndcg@50": 0.15623232665662795,
+      "coverage@50": 0.8688,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.02571640914313946,
+        0.04025525136771291
+      ]
+    },
+    {
+      "model": "two-tower, last 5",
+      "recall@10": 0.2275439177991382,
+      "ndcg@10": 0.12329858625184756,
+      "coverage@10": 0.63808,
+      "recall@50": 0.48989061982101423,
+      "ndcg@50": 0.18104095842342943,
+      "coverage@50": 0.87808,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.037164879192049145,
+        0.049968717346869945
+      ]
+    },
+    {
+      "model": "two-tower, last 10",
+      "recall@10": 0.20483924428239975,
+      "ndcg@10": 0.10895949527058486,
+      "coverage@10": 0.64672,
+      "recall@50": 0.4651972157772622,
+      "ndcg@50": 0.16598075949646968,
+      "coverage@50": 0.8656,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.02361758871068275,
+        0.03467018759670359
+      ]
+    },
+    {
+      "model": "two-tower, last 20",
+      "recall@10": 0.1730195558501823,
+      "ndcg@10": 0.08892312605211461,
+      "coverage@10": 0.62144,
+      "recall@50": 0.4211136890951276,
+      "ndcg@50": 0.14319217456269157,
+      "coverage@50": 0.8448,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.0038261059148839032,
+        0.014262664610188968
+      ]
+    },
+    {
+      "model": "two-tower, last 50",
+      "recall@10": 0.15578389128273118,
+      "ndcg@10": 0.07994517691619693,
+      "coverage@10": 0.62464,
+      "recall@50": 0.386973815048061,
+      "ndcg@50": 0.1301108491693587,
+      "coverage@50": 0.83424,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "model": "two-tower, last 100",
+      "recall@10": 0.14865760689426583,
+      "ndcg@10": 0.07615160622218649,
+      "coverage@10": 0.61664,
+      "recall@50": 0.3843221743453762,
+      "ndcg@50": 0.12721681739267893,
+      "coverage@50": 0.84064,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        -0.008883569220668975,
+        0.0013761897318011124
+      ]
+    },
+    {
+      "model": "two-tower, last 200",
+      "recall@10": 0.14501160092807425,
+      "ndcg@10": 0.074398479895094,
+      "coverage@10": 0.61664,
+      "recall@50": 0.37421279416639047,
+      "ndcg@50": 0.12407628289890539,
+      "coverage@50": 0.81856,
+      "minus the reported history length, ndcg@10, paired ci95": [
+        -0.010499259136594033,
+        -0.0006029440640575667
+      ]
+    }
+  ],
+  "bootstrap": {
+    "resamples": 1000,
+    "seed": 20261107
+  }
+}

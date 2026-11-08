@@ -58,6 +58,17 @@ def test_events_before_a_cut_are_every_earlier_training_or_validation_positive(p
         assert seq.items[seq.starts[u] : seq.starts[u + 1]].tolist() == want
 
 
+def test_keeping_users_keeps_all_of_their_positives_and_only_theirs(prepared: Prepared) -> None:
+    cut = int(np.quantile(prepared.test_times, 0.3))
+    keep = np.array([0, 5], dtype=np.int64)
+    strict, kept = lt.events_before(prepared, cut), lt.events_before(prepared, cut, keep_users=keep)
+    full = tt.sequences(prepared, include_val=True)
+    for u in range(prepared.n_users):
+        got = kept.items[kept.starts[u] : kept.starts[u + 1]].tolist()
+        source = full if u in keep else strict
+        assert got == source.items[source.starts[u] : source.starts[u + 1]].tolist()
+
+
 def test_each_model_trains_on_exactly_what_it_should(prepared: Prepared, monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[tt.Sequences] = []
     real_train = tt.train
@@ -70,11 +81,16 @@ def test_each_model_trains_on_exactly_what_it_should(prepared: Prepared, monkeyp
     result = lt.run(prepared, CONFIG, buckets=3)
     full = tt.sequences(prepared, include_val=True)
     assert seen[0].items.tolist() == full.items.tolist()  # the leaky model: all training + validation
-    cuts = [int(prepared.test_times[users].min()) for users in lt.bucket_users(prepared.test_times, 3)]
-    trained = [cut for cut, row in zip(cuts, result["buckets"], strict=True) if row["trained"]]
-    assert len(seen) == 1 + len(trained)
-    for seq, cut in zip(seen[1:], trained, strict=True):
-        want = lt.events_before(prepared, cut)
+    # Then, per bucket: the strict as-of model, and the one that keeps the bucket's own users' histories.
+    expected = []
+    for users, row in zip(lt.bucket_users(prepared.test_times, 3), result["buckets"], strict=True):
+        cut = int(prepared.test_times[users].min())
+        if row["trained"]:
+            expected.append(lt.events_before(prepared, cut))
+        if row["trained, own histories kept"]:
+            expected.append(lt.events_before(prepared, cut, keep_users=users))
+    assert len(seen) == 1 + len(expected)
+    for seq, want in zip(seen[1:], expected, strict=True):
         assert seq.items.tolist() == want.items.tolist()
         assert seq.starts.tolist() == want.starts.tolist()
 
@@ -235,8 +251,16 @@ def test_each_buckets_numbers_are_its_own_models(prepared: Prepared) -> None:
         leaky = ev.ranks(leaky_scores.score(users), history[users], prepared.test_items[users])
         assert row["ndcg@10"]["as of the cut"] == float(ev.ndcg_at(as_of, 10).mean())
         assert row["ndcg@10"]["leaky"] == float(ev.ndcg_at(leaky, 10).mean())
+        own_net, _ = tt.train(lt.events_before(prepared, cut, keep_users=users), genres, CONFIG)
+        own_scores = tt.embed(own_net, test_seq, CONFIG.max_history).score(users)
+        own = ev.ranks(own_scores, history[users], prepared.test_items[users])
+        assert row["ndcg@10"]["as of the cut, own histories kept"] == float(ev.ndcg_at(own, 10).mean())
     cell = result[lt.COMPARISON]["ndcg@10"]
     assert cell[lt.LEAKY] != cell[lt.AS_OF]  # so swapping the two can't pass
+    own = result[lt.COMPARISON_OWN]["ndcg@10"]
+    assert own[lt.LEAKY] == cell[lt.LEAKY]
+    assert own["difference"] == pytest.approx(own[lt.LEAKY] - own[lt.AS_OF_OWN])
+    assert own[lt.AS_OF_OWN] != cell[lt.AS_OF]
 
 
 def _handmade(val_times: list[int]) -> Prepared:

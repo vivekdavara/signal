@@ -189,13 +189,16 @@ def _leakage_twotower(args: argparse.Namespace) -> int:
     out = args.out or Path("results") / args.dataset / "leakage-twotower.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n")
-    for metric, cell in result[leakage_twotower.COMPARISON].items():
-        low, high = cell["difference ci95"]
-        print(
-            f"two-tower {metric}: leaky {cell[leakage_twotower.LEAKY]:.4f}, "
-            f"as of the cut {cell[leakage_twotower.AS_OF]:.4f}, "
-            f"difference {cell['difference']:+.4f} [{low:+.4f}, {high:+.4f}]"
-        )
+    for block, label, name in (
+        (leakage_twotower.COMPARISON, leakage_twotower.AS_OF, "as of the cut"),
+        (leakage_twotower.COMPARISON_OWN, leakage_twotower.AS_OF_OWN, "as of the cut, own histories kept"),
+    ):
+        for metric, cell in result[block].items():
+            low, high = cell["difference ci95"]
+            print(
+                f"two-tower {metric}: leaky {cell[leakage_twotower.LEAKY]:.4f}, {name} {cell[label]:.4f}, "
+                f"difference {cell['difference']:+.4f} [{low:+.4f}, {high:+.4f}]"
+            )
     print(f"wrote {out}")
     return 0
 

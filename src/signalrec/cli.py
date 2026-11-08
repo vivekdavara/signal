@@ -10,7 +10,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from signalrec import download, experiment, leakage, movielens, prepare, recommend, synthetic
+from signalrec import download, experiment, experiment_twotower, leakage, movielens, prepare, recommend, synthetic
 from signalrec.baselines import ItemKNN, Popularity
 
 DEFAULT_DATA = Path("data")
@@ -61,6 +61,41 @@ def _baselines(args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2) + "\n")
     print(experiment.table(result))
+    print(f"wrote {out}")
+    return 0
+
+
+def _twotower(args: argparse.Namespace) -> int:
+    processed = args.data_dir / "processed" / args.dataset
+    prepared = prepare.load(processed, args.dataset)
+    manifest = prepared.manifest
+    if manifest is None:  # as in _baselines
+        raise prepare.PrepareError(f"{processed}: loaded without its manifest")
+
+    def progress(line: str) -> None:
+        if not args.quiet:
+            print(line, file=sys.stderr, flush=True)
+
+    result = {
+        "command": "signalrec " + shlex.join(args.argv),
+        "dataset": args.dataset,
+        "prepared": {"params": manifest["params"], "counts": manifest["counts"], "sources": manifest["sources"]},
+        **experiment_twotower.run(
+            prepared,
+            grid=experiment_twotower.DEFAULT_GRID if args.grid is None else args.grid,
+            epochs=args.epochs,
+            seeds=args.seeds,
+            knn_grid=experiment.DEFAULT_GRID if args.knn_grid is None else args.knn_grid,
+            progress=progress,
+        ),
+    }
+    out = args.out or Path("results") / args.dataset / "twotower.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    print(experiment_twotower.table(result))
+    versus = result["two-tower minus item-knn, validation ndcg@10 (paired)"]
+    low, high = versus["ci95"]
+    print(f"validation ndcg@10, two-tower minus item-kNN: {versus['value']:+.4f} [{low:+.4f}, {high:+.4f}]")
     print(f"wrote {out}")
     return 0
 
@@ -132,6 +167,31 @@ def _grid(spec: str) -> list[tuple[int, float]]:
     return pairs
 
 
+def _temperature_grid(spec: str) -> list[tuple[float, bool]]:
+    """Parse temperature:logq pairs: 0.05:on,0.1:off -> [(0.05, True), (0.1, False)]."""
+    pairs = []
+    for part in spec.split(","):
+        t_text, sep, q_text = part.partition(":")
+        try:
+            temperature = float(t_text)
+        except ValueError:
+            temperature = -1.0
+        if not sep or q_text not in ("on", "off") or not math.isfinite(temperature) or temperature <= 0:
+            raise argparse.ArgumentTypeError(f"{part!r}: expected temperature:on|off with a temperature > 0")
+        pairs.append((temperature, q_text == "on"))
+    return pairs
+
+
+def _seeds(spec: str) -> list[int]:
+    try:
+        seeds = [int(part) for part in spec.split(",")]
+    except ValueError:
+        seeds = [-1]
+    if any(seed < 0 for seed in seeds) or len(set(seeds)) != len(seeds):
+        raise argparse.ArgumentTypeError(f"{spec!r}: expected distinct integers >= 0, e.g. 0,1,2")
+    return seeds
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="signalrec", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -164,6 +224,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--grid", type=_grid, help="item-kNN k:shrink pairs, e.g. 10:0,50:10 (default: 10 k values x 3 shrinks)"
     )
     p.set_defaults(run=_baselines)
+
+    p = sub.add_parser("twotower", help="train the two-tower retriever by the protocol, report it beside the baselines")
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    p.add_argument("--out", type=Path, help="default: results/<dataset>/twotower.json")
+    p.add_argument(
+        "--grid", type=_temperature_grid, help="temperature:logq pairs, e.g. 0.05:on,0.1:off (default: 3 x on/off)"
+    )
+    p.add_argument("--epochs", type=_positive_int, default=experiment_twotower.DEFAULT_EPOCHS)
+    p.add_argument("--seeds", type=_seeds, default=list(experiment_twotower.DEFAULT_SEEDS), help="default: 0,1,2")
+    p.add_argument("--knn-grid", type=_grid, help="item-kNN's k:shrink pairs to compare with (default: the full grid)")
+    p.add_argument("--quiet", action="store_true", help="no per-epoch progress on stderr")
+    p.set_defaults(run=_twotower)
 
     p = sub.add_parser("leakage", help="measure the split's calendar-time leakage and what it is worth to popularity")
     p.add_argument("dataset", choices=sorted(movielens.FORMATS))

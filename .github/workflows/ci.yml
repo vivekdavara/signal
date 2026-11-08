@@ -69,3 +69,11 @@ jobs:
         run: |
           signalrec leakage ml-latest-small --out "$RUNNER_TEMP/leakage.json"
           python scripts/compare_results.py results/ml-latest-small/leakage.json "$RUNNER_TEMP/leakage.json"
+      # Both two-tower commands end to end on real data, briefly. Their numbers aren't compared with the committed
+      # ones: those came from an Apple M3, this is x86-64, and nothing makes float training identical across CPUs.
+      - name: Two-tower smoke run (2 epochs, one configuration, one seed)
+        run: |
+          signalrec twotower ml-latest-small --epochs 2 --grid 0.1:on --seeds 0 --knn-grid 2:0 --quiet \
+            --out "$RUNNER_TEMP/twotower.json"
+          signalrec leakage-twotower ml-latest-small --from "$RUNNER_TEMP/twotower.json" --buckets 2 \
+            --out "$RUNNER_TEMP/leakage-twotower.json"

@@ -298,6 +298,13 @@ def test_log_q_is_each_targets_share() -> None:
         {"temperature": float("nan")},
         {"lr": float("inf")},
         {"lr": -1.0},
+        # Review round 1 (day 2): torch.manual_seed refuses these; 1/1e-39 overflows float32; "off" is truthy.
+        {"seed": 2**64},
+        {"seed": -1},
+        {"seed": True},
+        {"temperature": 1e-39},
+        {"logq": "off"},
+        {"logq": 1},
     ],
 )
 def test_bad_configs_are_refused(change: dict[str, object]) -> None:

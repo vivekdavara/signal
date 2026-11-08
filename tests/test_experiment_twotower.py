@@ -7,13 +7,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from signalrec import cli, experiment, movielens, prepare, synthetic
 from signalrec import evaluate as ev
 from signalrec import experiment_twotower as ext
 from signalrec import twotower as tt
-from signalrec.baselines import ItemKNN
+from signalrec.baselines import ItemKNN, Popularity
 from signalrec.prepare import Prepared
 
 GRID = ((0.1, True), (0.5, False))
@@ -211,3 +212,37 @@ def test_bad_twotower_flags_are_usage_errors(flags: list[str], capsys: pytest.Ca
         cli.main(["twotower", "synthetic", *flags])
     assert exit_info.value.code == 2
     assert "usage" in capsys.readouterr().err
+
+
+def test_popularity_is_refit_on_training_plus_validation(prepared: Prepared, result: dict[str, Any]) -> None:
+    # Review round 1: popularity fit on training only, and its paired difference with the sign swapped, both survived.
+    history = prepared.history(include_val=True)
+    popularity = Popularity()
+    popularity.fit(history)
+    want = ev.evaluate(popularity, history, prepared.test_items, "test").summary()
+    assert result["test"]["popularity"]["ndcg@50"]["value"] == want["ndcg@50"]
+    for metric in ("ndcg@10", "ndcg@50", "recall@50"):
+        diff = result["two-tower minus popularity (paired, test)"][metric]
+        assert diff["value"] == pytest.approx(result["test"]["two-tower"][metric]["value"] - want[metric])
+    assert result["two-tower minus popularity (paired, test)"]["ndcg@50"]["value"] != 0
+
+
+def test_ties_go_to_the_earlier_configuration_then_epoch(prepared: Prepared, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every evaluation returns the same ranks, so every candidate ties: the choice must be the first configuration's
+    # first epoch, and every other candidate (interval [0, 0]) is listed as indistinguishable. Review round 1's three
+    # tie-rule mutants (>= for >, the last configuration, < 0 for <= 0) survived a fixture without exact ties.
+    def same_ranks(model: Any, history: Any, targets: Any, split: str, *args: Any, **kwargs: Any) -> ev.Evaluation:
+        n_users, n_items = history.shape
+        return ev.Evaluation(
+            "fake", split, np.full(n_users, 3, dtype=np.int64), n_items, np.zeros((n_users, 50), dtype=np.int64)
+        )
+
+    monkeypatch.setattr(ev, "evaluate", same_ranks)
+    tied = ext.run(prepared, GRID, 3, (0,), KNN_GRID, BASE)
+    assert tied["chosen"]["two-tower"] == {"temperature": GRID[0][0], "logq": GRID[0][1], "epochs": 1}
+    assert [row["best epoch"] for row in tied["validation"]["two-tower"]] == [1, 1]
+    reaches = "indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)"
+    configs = tied[f"validation configurations {reaches}"]
+    assert configs == [{"temperature": GRID[1][0], "logq": GRID[1][1]}]
+    candidates = tied[f"validation candidates {reaches}"]
+    assert candidates["of"] == candidates["count"] == 2 * 3 - 1

@@ -13,6 +13,8 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.3",
     "scipy>=1.16",
+    # CPU is enough (DESIGN.md: no GPUs). CI installs the CPU-only wheel first; see .github/workflows/ci.yml.
+    "torch>=2.9",
 ]
 
 [project.optional-dependencies]

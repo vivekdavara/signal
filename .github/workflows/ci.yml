@@ -16,7 +16,10 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install
-        run: pip install -e '.[dev]'
+        # The CPU-only PyTorch wheel first: PyPI's Linux wheel pulls in CUDA libraries (gigabytes) no job uses.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev]'
       - name: Lint
         run: |
           ruff check .
@@ -43,7 +46,10 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install
-        run: pip install -e '.[dev]'
+        # The CPU-only PyTorch wheel first: PyPI's Linux wheel pulls in CUDA libraries (gigabytes) no job uses.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e '.[dev]'
       - name: Cache the archive by its pinned SHA-256
         uses: actions/cache@v6
         with:

@@ -9,6 +9,7 @@ import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from signalrec import (
     download,
@@ -133,14 +134,28 @@ def _leakage(args: argparse.Namespace) -> int:
     return 0
 
 
-def _reported_config(path: Path, dataset: str) -> tt.Config:
+FIXED_SETTINGS = frozenset({"dim", "hidden", "batch_size", "lr", "max_history"})
+
+
+def _reported_config(path: Path, dataset: str, manifest: dict[str, Any] | None = None) -> tt.Config:
     """The configuration a two-tower results file reports on test: the validation choice, the fixed settings, the
-    first seed."""
+    first seed.
+
+    With ``manifest`` (the processed data about to be used), the file must also have been produced from exactly that
+    data: the same parameters, counts and sources. Every fixed setting must be present (review round 2: missing ones
+    silently took today's defaults).
+    """
     try:
         result = json.loads(path.read_text())
         if result["dataset"] != dataset:
             raise prepare.PrepareError(f"{path} holds {result['dataset']!r}, not {dataset!r}")
+        if manifest is not None:
+            on_disk = {key: manifest[key] for key in ("params", "counts", "sources")}
+            if result["prepared"] != on_disk:
+                raise prepare.PrepareError(f"{path} was produced from other prepared data than {dataset}'s on disk")
         chosen, fixed = result["chosen"]["two-tower"], result["fixed"]
+        if not isinstance(fixed, dict) or set(fixed) != FIXED_SETTINGS:
+            raise prepare.PrepareError(f"{path}: fixed settings {fixed!r}, expected exactly {sorted(FIXED_SETTINGS)}")
         config = tt.Config(
             **fixed,
             temperature=chosen["temperature"],
@@ -159,12 +174,17 @@ def _reported_config(path: Path, dataset: str) -> tt.Config:
 def _leakage_twotower(args: argparse.Namespace) -> int:
     processed = args.data_dir / "processed" / args.dataset
     source = args.source or Path("results") / args.dataset / "twotower.json"
-    config = _reported_config(source, args.dataset)
+    prepared = prepare.load(processed, args.dataset)
+    if prepared.manifest is None:  # as in _baselines
+        raise prepare.PrepareError(f"{processed}: loaded without its manifest")
+    config = _reported_config(source, args.dataset, prepared.manifest)
+    if args.buckets > prepared.n_users:
+        raise prepare.PrepareError(f"--buckets {args.buckets}: more buckets than the {prepared.n_users} users")
     result = {
         "command": "signalrec " + shlex.join(args.argv),
         "dataset": args.dataset,
         "configuration from": str(source),
-        **leakage_twotower.run(prepare.load(processed, args.dataset), config, args.buckets),
+        **leakage_twotower.run(prepared, config, args.buckets),
     }
     out = args.out or Path("results") / args.dataset / "leakage-twotower.json"
     out.parent.mkdir(parents=True, exist_ok=True)

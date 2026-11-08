@@ -315,11 +315,23 @@ def test_bad_configs_are_refused(change: dict[str, object]) -> None:
 
 def test_training_refuses_movies_outside_the_genre_matrix() -> None:
     seq = tt.Sequences(np.array([0, 1, 9], dtype=np.int64), np.array([0, 3], dtype=np.int64))
-    with pytest.raises(ValueError, match="outside the genre matrix"):
+    with pytest.raises(tt.TrainingError, match="outside the genre matrix"):
         tt.train(seq, _no_genres(5), tt.Config(epochs=1, batch_size=2))
 
 
 def test_training_needs_two_examples() -> None:
     seq = tt.Sequences(np.array([0, 1], dtype=np.int64), np.array([0, 2], dtype=np.int64))
-    with pytest.raises(ValueError, match="fewer than 2"):
+    with pytest.raises(tt.TrainingError, match="fewer than 2"):
         tt.train(seq, _no_genres(2), tt.Config(epochs=1, batch_size=2))
+
+
+@pytest.mark.parametrize("seed", [0, 2**63, 2**64 - 1])
+def test_every_seed_torch_takes_is_accepted(seed: int) -> None:
+    tt.Config(seed=seed).check()
+    torch.manual_seed(seed)
+    np.random.default_rng(seed)
+
+
+@pytest.mark.parametrize("temperature", [tt.MIN_TEMPERATURE, 0.05, 1.0, 100])
+def test_sane_temperatures_are_accepted(temperature: float) -> None:
+    tt.Config(temperature=temperature).check()

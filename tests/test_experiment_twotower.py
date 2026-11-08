@@ -205,6 +205,8 @@ def test_the_twotower_command_writes_json_and_a_table(tmp_path: Path, capsys: py
         ["--seeds", "-1"],
         ["--seeds", "a"],
         ["--epochs", "0"],
+        ["--grid", "0.0001:on"],  # below twotower.MIN_TEMPERATURE (review round 2)
+        ["--seeds", str(2**64)],
     ],
 )
 def test_bad_twotower_flags_are_usage_errors(flags: list[str], capsys: pytest.CaptureFixture[str]) -> None:
@@ -246,3 +248,38 @@ def test_ties_go_to_the_earlier_configuration_then_epoch(prepared: Prepared, mon
     assert configs == [{"temperature": GRID[1][0], "logq": GRID[1][1]}]
     candidates = tied[f"validation candidates {reaches}"]
     assert candidates["of"] == candidates["count"] == 2 * 3 - 1
+
+
+def test_a_non_best_epochs_interval_is_chosen_minus_it(prepared: Prepared, result: dict[str, Any]) -> None:
+    # Review round 2: swapping the per-candidate interval's arguments, or its ends, survived (only the all-tied case
+    # checked it). Recomputed for the second configuration's first epoch.
+    chosen = result["chosen"]["two-tower"]
+    best = _val_ndcg(
+        prepared,
+        replace(BASE, temperature=chosen["temperature"], logq=chosen["logq"], epochs=chosen["epochs"], seed=SEEDS[0]),
+    )
+    temperature, logq = GRID[1]
+    other = _val_ndcg(prepared, replace(BASE, temperature=temperature, logq=logq, epochs=1, seed=SEEDS[0]))
+    point = result["validation"]["two-tower"][1]["curve"][0]
+    want = ev.paired_bootstrap_ci(best, other, seed=experiment.SEED)
+    assert want[0] != -want[1]  # a mirrored interval would differ
+    assert tuple(point[ext.DIAGNOSTIC]) == want
+
+
+@pytest.mark.parametrize(
+    ("grid", "seeds", "message"),
+    [
+        (((0.1, True), (0.1, True)), (0,), "repeats a configuration"),
+        (((0.1, True),), (1, 1), "seeds repeat"),
+        (((0.1, True),), (0, 2**64), "seed"),
+    ],
+)
+def test_run_refuses_repeats_and_bad_seeds_before_training(
+    prepared: Prepared, monkeypatch: pytest.MonkeyPatch, grid: Any, seeds: Any, message: str
+) -> None:
+    def no_training(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("trained before refusing")
+
+    monkeypatch.setattr(tt, "train", no_training)
+    with pytest.raises(ValueError, match=message):
+        ext.run(prepared, grid, 2, seeds, KNN_GRID, BASE)

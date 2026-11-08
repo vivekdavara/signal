@@ -36,6 +36,9 @@ Float32Array = npt.NDArray[np.float32]
 Float64Array = npt.NDArray[np.float64]
 
 
+MIN_TEMPERATURE = 1e-3
+
+
 class TrainingError(ValueError):
     """The data can't be trained on (too few examples, a movie index outside the catalogue)."""
 
@@ -61,12 +64,14 @@ class Config:
             raise ValueError("batch_size must be at least 2: in-batch negatives need another example")
         for name in ("temperature", "lr"):
             value = getattr(self, name)
-            if not math.isfinite(value) or value <= 0:
+            # type() and not isinstance: True is an int, and "temperature": true is not 1.0 (review round 2).
+            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
-        # Logits are cosines (at most 1) divided by the temperature, in float32: 1/τ must be a finite float32, or the
-        # loss is NaN (review round 1: a temperature of 1e-39 trained "successfully" on NaN losses).
-        if 1.0 / self.temperature > float(np.finfo(np.float32).max):
-            raise ValueError(f"temperature {self.temperature!r} is too small: 1/temperature overflows float32")
+        # Logits are cosines divided by τ, in float32. Round 1 found NaN losses at τ = 1e-39 and bounded 1/τ by
+        # float32's maximum; round 2 found that bound too loose (3e-39 is a denormal and still NaN, 1e-38 gives infinite
+        # losses). A sane floor instead: logits at most 2,000 apart, far past any useful temperature (0.05-0.2 here).
+        if self.temperature < MIN_TEMPERATURE:
+            raise ValueError(f"temperature must be at least {MIN_TEMPERATURE}, got {self.temperature!r}")
         if type(self.logq) is not bool:
             raise ValueError(f"logq must be True or False, got {self.logq!r}")
         # torch.manual_seed takes 0 <= seed < 2^64 (review round 1: 2^64 crashed after the whole grid had trained).

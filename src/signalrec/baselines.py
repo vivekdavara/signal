@@ -102,7 +102,9 @@ class ItemKNN:
     name = "item-knn"
 
     def __init__(self, k: int = 100, shrink: float = 0.0, block: int = 512) -> None:
-        if k < 1 or block < 1 or not math.isfinite(shrink) or shrink < 0:
+        # k and block slice arrays, so they must be integers (review round 2 of day 2: k=5.0 failed only at fit).
+        integers = all(isinstance(v, int | np.integer) and not isinstance(v, bool) for v in (k, block))
+        if not integers or k < 1 or block < 1 or not math.isfinite(shrink) or shrink < 0:
             raise ValueError(f"item-kNN needs k >= 1, block >= 1 and a finite shrink >= 0 (k={k}, shrink={shrink})")
         self.k = k
         self.shrink = shrink

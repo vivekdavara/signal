@@ -2,10 +2,12 @@
 
 Day 1 measured it for popularity by recounting as of each user's test time. A learned model can't be retrained once per
 user, so users are grouped into buckets by test time (equal numbers of users), and for each bucket a model is trained
-only on positives strictly before the bucket's **earliest** test time: every user's training, validation and test
-positives that had happened by then, as ``leakage.popularity_as_of`` counts them. That is stricter than per-user as-of
-for every user but the bucket's first (it also drops what happened between the cut and their own test time), so the
-difference it measures is an upper bound on the leak's worth, and more buckets tighten it.
+only on the training and validation positives strictly before the bucket's **earliest** test time. That data is a
+subset of the leaky model's (training + validation, at any time), so the two differ only in what happened after the
+cut. It is also stricter than per-user as-of for every user but the bucket's first (it drops what happened between the
+cut and their own test time), so it removes somewhat more than the leak; more buckets narrow that. Two more things
+differ from a clean "the leak's worth" (review round 2): an early bucket's model sees fewer examples, so with the same
+number of epochs it also takes fewer optimiser steps; and the configuration was chosen on the leaky validation run.
 
 Each bucket's users are then ranked exactly as in the reported test run: user vectors from their own training +
 validation history (the last 50 positives), that history excluded, ties to the smaller index. The "leaky" side is the
@@ -43,11 +45,15 @@ def bucket_users(test_times: IntArray, buckets: int) -> list[IntArray]:
 
 
 def events_before(p: Prepared, cut: int) -> tt.Sequences:
-    """Every user's positives (training, validation and test) with a time strictly before ``cut``, as sequences in
-    (time, movie id) order."""
-    users = np.concatenate([p.train_users, np.arange(p.n_users), np.arange(p.n_users)]).astype(np.int64)
-    items = np.concatenate([p.train_items, p.val_items, p.test_items]).astype(np.int64)
-    times = np.concatenate([p.train_times, p.val_times, p.test_times]).astype(np.int64)
+    """Every user's training and validation positives with a time strictly before ``cut``, as sequences in (time,
+    movie id) order.
+
+    Not the test positives: the leaky model never trains on them, so the as-of model mustn't either, or it would know
+    things the model it is compared with doesn't (review round 2; day 1's popularity count did include them).
+    """
+    users = np.concatenate([p.train_users, np.arange(p.n_users)]).astype(np.int64)
+    items = np.concatenate([p.train_items, p.val_items]).astype(np.int64)
+    times = np.concatenate([p.train_times, p.val_times]).astype(np.int64)
     keep = times < cut
     users, items, times = users[keep], items[keep], times[keep]
     order = np.lexsort((items, times, users))

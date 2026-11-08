@@ -73,9 +73,9 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     source = args.source or Path("results") / args.dataset / "twotower.json"
     reported = json.loads(source.read_text())
-    config = _reported_config(source, args.dataset)
-    knn_params = reported["validation"]["item-knn"]
     p = prepare.load(args.data_dir / "processed" / args.dataset, args.dataset)
+    config = _reported_config(source, args.dataset, p.manifest)
+    knn_params = reported["validation"]["item-knn"]
     history = p.history(include_val=False)
     seq = tt.sequences(p, include_val=False)
     genres, _ = tt.genre_matrix(p.genres)

@@ -61,7 +61,19 @@ def _with_intervals(e: ev.Evaluation) -> dict[str, Any]:
     return out
 
 
-def run(p: Prepared, grid: Iterable[tuple[int, float]] = DEFAULT_GRID) -> dict[str, Any]:
+@dataclass(frozen=True)
+class KnnTuning:
+    rows: list[dict[str, Any]]  # one per grid entry: k, shrink, the validation summary, fit time, the diagnostic
+    chosen: int  # index into rows
+    per_user: list[ev.FloatArray]  # each row's per-user validation NDCG@10
+
+    @property
+    def best(self) -> dict[str, Any]:
+        return self.rows[self.chosen]
+
+
+def tune_item_knn(p: Prepared, grid: Iterable[tuple[int, float]] = DEFAULT_GRID) -> KnnTuning:
+    """Item-kNN on validation for every (k, shrink); the choice is the highest NDCG@10, ties to the first row."""
     tuning: list[dict[str, Any]] = []
     per_user = []
     for k, shrink in grid:
@@ -71,12 +83,17 @@ def run(p: Prepared, grid: Iterable[tuple[int, float]] = DEFAULT_GRID) -> dict[s
         per_user.append(ev.ndcg_at(result.evaluation.ranks, PRIMARY_K))
     # Ties on the primary metric go to the first grid entry (smaller k, then smaller shrink).
     chosen = max(range(len(tuning)), key=lambda i: tuning[i][PRIMARY])
-    best = tuning[chosen]
     # A diagnostic, not part of the choice: is the chosen row distinguishable from each other row on validation?
     # The paired interval of (chosen - row) NDCG@10 over the same users; one that reaches 0 means "can't tell".
     for row, values in zip(tuning, per_user, strict=True):
         low, high = ev.paired_bootstrap_ci(per_user[chosen], values, seed=SEED)
         row[DIAGNOSTIC] = [low, high]
+    return KnnTuning(tuning, chosen, per_user)
+
+
+def run(p: Prepared, grid: Iterable[tuple[int, float]] = DEFAULT_GRID) -> dict[str, Any]:
+    knn_tuning = tune_item_knn(p, grid)
+    tuning, best = knn_tuning.rows, knn_tuning.best
     indistinguishable = [
         {"k": row["k"], "shrink": row["shrink"]} for row in tuning if row is not best and row[DIAGNOSTIC][0] <= 0
     ]

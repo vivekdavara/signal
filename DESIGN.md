@@ -244,6 +244,16 @@ of two directories: a crash between the renames leaves the old one beside it und
 - **A/B test simulator.** Users are assigned to arms by a hash of (experiment, user); a simulated user model decides
   clicks; the simulator reports the measured lift with a confidence interval and how many users a real test would
   need to detect it (power analysis). Its user model is synthetic and labelled as such.
+- **What day 3 leaves for day 4.**
+  - The user tower must run in NumPy: its history table, MLP weights and normalisation exported next to the item
+    vectors, with a test that NumPy and PyTorch give the same user vector for the same history. The reported model
+    reads the last 3 positives, which the store's 50-item recent list covers.
+  - The filter removes every *rated* movie, but the store's seen set holds positives only (rating >= 4), because the
+    processed data keeps only positives. Serving needs a rated set, filled from the raw ratings by the replay and by
+    `POST /events` for any rating; retrieval then excludes that set, and the ranker's features stay positives-only.
+  - `POST /events` appends in arrival order (a late event becomes the most recent), and goes through the same Lua
+    script, so a retried request is harmless.
+  - The serving process imports no torch, so the two OpenMP runtimes never meet there.
 
 ## Day 5
 

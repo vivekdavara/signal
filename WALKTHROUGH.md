@@ -259,11 +259,12 @@ report the untied one beside it (NDCG@10 0.0841; still +0.0570 over item-kNN). A
 treat the movies of the test second as a set.
 
 **Does the ranker help?**
-A little, and only on the big dataset. On ml-1m test it lifts NDCG@10 from 0.1220 to 0.1292 (+0.0072 [+0.0042,
-+0.0102]) and Recall@10 by +0.0134; on its validation selection users the same gain's interval reached zero
-([-0.0004, +0.0145]), and on ml-latest-small it doesn't help NDCG@10 at all. Retrieval already uses most of what the
-features know: the post-hoc ablation finds only the similarity to the last positive and genre affinity
-distinguishable from zero. The ceiling is retrieval: the test movie is in the top 200 for 69.2% of users.
+A little, and only on the big dataset. On ml-1m test it lifts NDCG@10 from 0.1220 to 0.1298 (+0.0078 [+0.0050,
++0.0105]) and Recall@10 by +0.0138. On its validation selection users the gain's interval is [+0.0007, +0.0143],
+barely above zero, and in the run before the review's float64 rescoring it reached zero; on ml-latest-small it doesn't
+help NDCG@10 at all. Retrieval already uses most of what the features know: the post-hoc ablation finds only the
+similarity to the last positive and the retrieval score distinguishable from zero. The ceiling is retrieval: the test
+movie is in the top 200 for 69.2% of users.
 
 **How does retrieval exclude what the user has already seen?**
 Inside the FAISS search: `Retriever.search` passes an `IDSelectorNot(IDSelectorBatch(seen))`, so the index returns

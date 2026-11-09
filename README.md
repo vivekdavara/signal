@@ -346,21 +346,52 @@ better guide to what the model would do on a user's genuinely next movie. Day 2'
 The day-3 two-tower model retrieves 200 unseen movies per user with the exact FAISS index (the retrieved order is
 exactly its full-ranking order: a test); a ranker re-orders them. On ml-1m the validation movie is among the 200 for
 72.7% of users and the test movie for 69.2%: the ranker's ceiling. Chosen on the 1,207 selection users (20% of the
-validation users; the other 80% train it): a 64-unit hidden layer, 15 epochs (linear 0.1392, 16 units 0.1398, 64 units
-0.1416 against the retrieved order's 0.1344; chosen minus retrieved +0.0072 [-0.0004, +0.0145], so validation alone
-doesn't exclude zero). Test:
+validation users; the other 80% train it): a 64-unit hidden layer, 20 epochs (linear 0.1392, 16 units 0.1399, 64 units
+0.1419 against the retrieved order's 0.1344; chosen minus retrieved +0.0075 [+0.0007, +0.0143]). Test:
 
 | ml-1m test | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Recall@200 |
 |---|---|---|---|---|---|
 | retrieved order | 0.2176 [0.2067, 0.2285] | 0.1220 [0.1155, 0.1286] | 0.4581 [0.4458, 0.4717] | 0.1747 [0.1683, 0.1808] | 0.6924 |
-| re-ranked | 0.2310 [0.2201, 0.2416] | 0.1292 [0.1225, 0.1357] | 0.4718 [0.4587, 0.4844] | 0.1820 [0.1754, 0.1885] | 0.6924 |
-| re-ranked − retrieved (paired) | +0.0134 [+0.0076, +0.0192] | +0.0072 [+0.0042, +0.0102] | +0.0138 [+0.0075, +0.0199] | +0.0073 [+0.0047, +0.0099] | 0 |
+| re-ranked | 0.2314 [0.2206, 0.2423] | 0.1298 [0.1231, 0.1364] | 0.4708 [0.4576, 0.4838] | 0.1822 [0.1757, 0.1884] | 0.6924 |
+| re-ranked − retrieved (paired) | +0.0138 [+0.0083, +0.0192] | +0.0078 [+0.0050, +0.0105] | +0.0128 [+0.0063, +0.0191] | +0.0076 [+0.0051, +0.0100] | 0 |
 
-A small, real gain: 6% relative on NDCG@10. Which features carry it (post hoc, selection users, the chosen settings
-retrained without each one): only the similarity to the last positive (-0.0073 [-0.0141, -0.0014]) and genre affinity
-(-0.0031 [-0.0063, -0.0002]) are distinguishable from zero; "year unknown" is constant on ml-1m (every title has a
-year). On **ml-latest-small** the ranker doesn't help NDCG@10 (-0.0023 [-0.0122, +0.0100]; Recall@50 +0.0316
-[+0.0116, +0.0532]): 481 training lists, 223 of them with the held-out movie.
+A small, real gain: 6% relative on NDCG@10. The validation evidence for it is thin: the run before the review's
+retrieval fix (float32 retrieval scores, otherwise the same; `b41e283`) chose 15 epochs and its selection interval
+was [-0.0004, +0.0145], reaching zero, with a test gain of +0.0072 [+0.0042, +0.0102]. Which features carry it (post
+hoc, selection users, the chosen settings retrained without each one): the similarity to the last positive (-0.0095
+[-0.0157, -0.0040]) and the retrieval score (-0.0055 [-0.0104, -0.0004]); no other is distinguishable from zero, and
+"year unknown" is constant on ml-1m (every title has a year). On **ml-latest-small** the ranker doesn't help NDCG@10
+(-0.0023 [-0.0122, +0.0100]; Recall@50 +0.0316 [+0.0116, +0.0532]): 481 training lists, 223 of them with the held-out
+movie.
+
+### FAISS: approximate against exact (`python scripts/bench_retrieval.py ml-1m`, `results/ml-1m/retrieval.json`)
+
+The day-3 model retrained on training + validation; every user's 200 unseen candidates from each index against the
+protocol's exact top 200 (float64, ties to the smaller index); one query per call on one FAISS thread, 200 untimed
+warm-up queries, inverted-CDF percentiles. 16:03-16:05, on battery, load average 2.7-3.9, no sleep, nothing else
+running:
+
+| ml-1m, 3,125 movies, 6,034 queries | recall of the exact top 200 | test movie in the 200 | p50 | p99 |
+|---|---|---|---|---|
+| flat (exact) | 1.0000 | 0.6924 | 92 µs | 141 µs |
+| HNSW, M=32, efSearch 200 | 0.9966 | 0.6934 | 140 µs | 197 µs |
+| HNSW, M=32, efSearch 400 | 0.9998 | 0.6922 | 239 µs | 311 µs |
+| IVF, 56 cells, nprobe 8 | 0.6380 | 0.5870 | 49 µs | 89 µs |
+| IVF, 56 cells, nprobe 16 | 0.8397 | 0.6546 | 56 µs | 99 µs |
+
+At 3,125 movies the exact index is both exact and faster than HNSW: scoring every movie is 200,000 multiply-adds, less
+than walking the graph. IVF is faster still but loses a third of the exact list at nprobe 8. So serving uses the exact
+index. A **SYNTHETIC** catalogue of 200,000 vectors (real movie vectors plus noise, labelled so in the JSON; 2,000 real
+user vectors, no exclusion) shows where that changes: flat 939 µs at p50, HNSW (efSearch 200) 260 µs at recall 0.9492
+after a 32 s single-threaded build, IVF (512 cells, nprobe 32) 127 µs at recall 0.9608 after 0.5 s.
+
+### The feature store (`python scripts/bench_featurestore.py ml-1m`, `results/ml-1m/featurestore.json`)
+
+Local Redis 8.8 on 6383 (loopback), 16:05-16:06, on battery: replaying all 568,342 training + validation positives
+through the Lua script, 1,000 per round trip, takes 8.47 s (**67,128 events/s**, best of 3); reading one user back
+(one MULTI/EXEC of four commands) takes **276 µs** at p50 and 659 µs at p99 over all 6,034 users; and **0** users and 0
+movies differ from the offline features. Reading the whole popularity hash takes 4.8 ms, too slow for every request:
+day 4 reads only the candidates' counts or caches it.
 
 ## Day 1 notes
 
@@ -473,6 +504,36 @@ conclusion: the own-histories model leaks too, and not a little (above), so "the
 bracket. 17 surviving mutants, all now failing a test. Findings per round: 7, 5, 5, each mostly in code written
 since the round before.
 
+## Review of day 3
+
+One review agent in its own worktree at `3afe5de` (everything up to the retrieval benchmark), with a correctness
+brief: failing tests in `tests/review_d3/`, and a mutation run. I stopped it after about 30 minutes, once its tests and
+mutation log were written but before its summary (it was waiting on work of its own); the findings below are from its
+tests, each docstring stating the defect, and its log.
+
+- **Retrieval** (`2901a79`). My docstring said FAISS searches HNSW with `max(efSearch, n)`; FAISS 1.15 doesn't (about
+  0.65 of the exact top 200 at efSearch 16): the Retriever now sets it. FAISS's flat index returned tied movies
+  largest index first, against the protocol's smaller-index rule; and in float32 a movie just below the cut can come
+  out just above it (one of 149 users' held-out movie, tied with a twin at the 30th place, was pushed to 31st). The
+  index is now asked for 16 extra candidates, which are rescored in float64 and sorted by (score, index) before the
+  cut.
+- **Ranking** (`4ccfca9`). A NaN score ranked first in `ranks_after` and last in `rerank`; non-finite scores and
+  features are now errors.
+- **Feature store** (`c84603a`). A namespace with a glob character made `clear()` delete other namespaces' keys;
+  negative or beyond-int64 values read back as features; an event with user `3.0` or `True` was written under keys
+  `user(3)` never reads.
+- **Metrics above n**: the same bug I had found and fixed in `fc5c122`; its tests are kept, one adapted to the fix.
+- **Mutants**: 32 applied, 18 survived. The worst: **the validation lists' popularity counting the validation
+  positives**, which are the ranker's labels; the test's "share retrieved" read from the validation lists; the
+  selection users' paired difference with its sign swapped; the retrieval benchmark's held-out share computed for the
+  validation movie (always 0). `tests/review_d3/test_survivors_d3.py` has a test per mutant, and re-applied to
+  today's code (`.scratch/mutate_d3.py`, restoring from git HEAD) all 16 still applicable are killed. The snapshot
+  read survived a concurrent writer (Redis runs a client's pipelined commands from one buffer together), so a spy
+  checks that it asks for MULTI/EXEC.
+
+Then measurement found one more: **the retrieval benchmark segfaulted** inside torch, because it imported faiss
+before torch (DESIGN.md, "Two OpenMP runtimes"; `a4be56b`).
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are
@@ -530,8 +591,8 @@ since the round before.
   `KMP_DUPLICATE_LIB_OK` (DESIGN.md, "As built (day 3)"), which Intel calls unsupported; faiss-first segfaults and a
   batch search hung, so `retrieval.py` imports torch first and searches one query at a time. The tests check FAISS's
   answers in that setting.
-- The ranker's gain on ml-1m (+0.0072 NDCG@10 on test) was not established on validation: its selection-users
-  interval reached zero.
+- The ranker's gain on ml-1m (+0.0078 NDCG@10 on test) is barely established on validation: its selection-users
+  interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring.
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
   and above about 2^33 ≈ 8.6e9 times a pair's co-count rounds it to zero (checked: a co-count-1 pair survives a shrink
   of 8e9 and vanishes at 9e9). Nothing refuses such a shrink; the useful range is 0 to about 100.

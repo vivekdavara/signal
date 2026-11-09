@@ -46,7 +46,7 @@ make check                                 # ruff, ruff format --check, mypy --s
 .venv/bin/signalrec baselines ml-1m        # results/ml-1m/baselines.json and a table
 .venv/bin/signalrec leakage ml-1m          # results/ml-1m/leakage.json
 .venv/bin/signalrec recommend ml-1m --user 1   # one user's recent likes and item-kNN's top 10, by title
-.venv/bin/signalrec twotower ml-1m         # results/ml-1m/twotower.json: tuned on validation, 3 seeds on test (~10 min)
+.venv/bin/signalrec twotower ml-1m         # results/ml-1m/twotower.json (about 13 minutes here)
 .venv/bin/signalrec leakage-twotower ml-1m # results/ml-1m/leakage-twotower.json (needs twotower.json first)
 .venv/bin/python scripts/recency_ablation.py ml-1m --out results/ml-1m/recency-ablation.json
 ```
@@ -349,9 +349,10 @@ configuration's best epoch had one; and DESIGN said every training positive is a
 user's first (no history), so DESIGN changed. Its 14 surviving mutants mattered more: **a target leaking into its own
 training history**, the logQ flag inverted, the temperature or the accidental-hit mask ignored in training, genres
 ignored, the user tower reading the item table, scoring without each user's last positive. Every other test
-recomputed results through the same `train` and `embed`, so it couldn't see inside them. `tests/test_twotower_internals.py`
-now watches from outside (spies on what each batch feeds the loss; both towers recomputed by hand), and all 18 listed
-mutants fail a test (`01f22e2`; applied from a copy, restored, compared byte for byte).
+recomputed results through the same `train` and `embed`, so it couldn't see inside them.
+`tests/test_twotower_internals.py` now watches from outside (spies on what each batch feeds the loss; both towers
+recomputed by hand), and all 18 listed mutants fail a test (`01f22e2`; applied from a copy, restored, compared byte
+for byte).
 
 **Round 2** (at `01f22e2`, about 14 minutes) was asked what round 1's fixes broke, and reviewed the two pieces no round
 had seen (`leakage_twotower.py`, `scripts/recency_ablation.py`). 5 defects, fixed in `7faa1a9` and `b9d7045`:

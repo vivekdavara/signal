@@ -8,6 +8,17 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    services:
+      # The feature store's tests (DESIGN.md, "Day 3"): on the project's port, as locally.
+      redis:
+        image: redis:8
+        ports:
+          - 6383:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      # The Redis tests fail instead of skipping when the service is missing.
+      SIGNALREC_REQUIRE_REDIS: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6

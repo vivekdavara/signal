@@ -17,6 +17,8 @@ dependencies = [
     "torch>=2.9",
     # Candidate retrieval (day 3); the CPU wheel, built against NumPy 2.
     "faiss-cpu>=1.12",
+    # The online feature store (day 3).
+    "redis>=6",
 ]
 
 [project.optional-dependencies]

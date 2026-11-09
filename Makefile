@@ -28,10 +28,12 @@ data:
 
 # Every number in the README's results: the baselines and the leakage on both datasets, then the ml-1m benchmark
 # (about 2 minutes on an M3; take the benchmark on a quiet machine), then day 2's two-tower model, what the leak is
-# worth to it, and the recency ablation (about 35 minutes on an M3; leakage-twotower reads twotower.json).
+# worth to it (10 and 20 buckets), and the recency ablation (about 55 minutes on an M3; leakage-twotower reads
+# twotower.json).
 results: data
 	for d in $(DATASETS); do $(SIGNALREC) baselines $$d && $(SIGNALREC) leakage $$d || exit 1; done
 	$(SIGNALREC) baselines ml-1m --grid 10:0 --out results/ml-1m/post-hoc-item-knn-k10.json
 	$(PY) scripts/bench_pipeline.py ml-1m --repeats 5 --out results/ml-1m/bench.json
 	for d in $(DATASETS); do $(SIGNALREC) twotower $$d --quiet && $(SIGNALREC) leakage-twotower $$d || exit 1; done
+	$(SIGNALREC) leakage-twotower ml-1m --buckets 20 --out results/ml-1m/leakage-twotower-20-buckets.json
 	$(PY) scripts/recency_ablation.py ml-1m --out results/ml-1m/recency-ablation.json

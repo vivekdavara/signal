@@ -264,8 +264,14 @@ showed that the second one leaks too, and not a little: it keeps a bucket-mate's
 test item, and in ml-1m's first bucket only 468 of its 43,520 training examples are from before the cut. What the
 pair can't say how much of the first estimate's drop was the leak and how much was users' own recent past. A
 check on the code: the last bucket's own-histories model trains on exactly the reported model's 562,308 examples and scores
-exactly its 0.0335. Narrowing the bracket needs more, smaller buckets (each one is another training run; day 3 or 4
-if there's time). On **ml-latest-small** (601 users over 22 years, 60 per bucket) a gap remains even with own
+exactly its 0.0335.
+
+Smaller buckets narrow both errors. With 20 buckets of about 302 users (`signalrec leakage-twotower ml-1m --buckets
+20 --out results/ml-1m/leakage-twotower-20-buckets.json`, 19:27-19:45), the strict model scores 0.0368 (+0.0345
+[+0.0296, +0.0396]) and the own-histories model 0.0692 (+0.0020 [-0.0028, +0.0069]); at Recall@50 the own-histories
+difference, +0.0220 [+0.0109, +0.0336], now excludes zero (10 buckets: +0.0071 [-0.0035, +0.0177]). So as the
+within-bucket leak shrinks, the lower end of the bracket rises: the leak is worth something to the two-tower model
+deeper in the list, as it was to popularity (day 1: Recall@50 +0.0043), and little at the top. On **ml-latest-small** (601 users over 22 years, 60 per bucket) a gap remains even with own
 histories kept: NDCG@10 0.0523 against 0.0308, +0.0215 [+0.0094, +0.0356]. With so few users per bucket, an early
 bucket's model learns from very little, so that gap mixes the leak with plain data volume; this run can't separate
 them.

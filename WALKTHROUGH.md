@@ -215,7 +215,9 @@ what existed before the bucket's earliest test time: the score halves (0.0713 to
 user's *own* recent positives, which are their past, so it overstates the leak. A second model keeps the bucket's own
 users' histories and scores 0.0712, but it keeps bucket-mates' positives from after a user's test item, a leak of its
 own and not a small one (review round 3: in the first bucket, 468 of 43,520 examples predate the cut). So the leak is
-worth somewhere between nothing measurable and half the model's NDCG@10; more, smaller buckets would narrow it. The
+worth somewhere between nothing measurable and half the model's NDCG@10. Halving the buckets' size (20 instead of
+10) narrows it from below: the own-histories estimate's Recall@50 gap becomes +0.022 [+0.011, +0.034], so the leak
+is worth something deeper in the list, as it was for popularity, and little at the top. The
 last bucket is a built-in check that the code does what it says: with its own histories kept it trains on exactly the
 reported model's data and scores exactly the same.
 

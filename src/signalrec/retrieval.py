@@ -6,9 +6,10 @@ the largest inner products: maximum inner product search. Three indexes:
 
 - **flat** (``IndexFlatIP``): every movie scored, the exact answer. The reference.
 - **hnsw** (``IndexHNSWFlat``): a navigable small-world graph; a query walks it greedily, keeping the ``ef_search``
-  best nodes seen. ``Retriever`` searches with ``max(ef_search, n)``: FAISS's search list stops at ``efSearch`` itself
-  (review of day 3: at 16 for n = 200 it returned about 0.65 of the exact top 200; this docstring had said FAISS
-  takes the maximum, which it doesn't).
+  best nodes seen. ``Retriever`` searches with ``max(ef_search, k)``, where k is the number of candidates it asks FAISS
+  for (``n + RESCORE_MARGIN``, more when widening, below): FAISS's search list stops at ``efSearch`` itself (review of
+  day 3: at 16 for n = 200 it returned about 0.65 of the exact top 200; this docstring had said FAISS takes the
+  maximum, which it doesn't). So "efSearch 200" for n = 200 searches with 216.
 - **ivf** (``IndexIVFFlat``): k-means cells over the movies; a query scores only the movies in its ``nprobe`` nearest
   cells.
 
@@ -21,7 +22,10 @@ The candidates come back in the protocol's order: rescored in float64 from the i
 smaller movie index, as ``evaluate.top_k`` ranks (review of day 3: FAISS's flat index returned tied movies largest index
 first). FAISS scores in float32, so a movie just below the cut in float64 can come out just above it: the index is asked
 for ``RESCORE_MARGIN`` more candidates than requested, and the cut is made after rescoring (the same review: one of 149
-users' held-out movies, tied with a twin at the 30th place, was pushed out by such a movie).
+users' held-out movies, tied with a twin at the 30th place, was pushed out by such a movie). If the last candidate
+fetched is not clearly below the n-th, a tie group may run past the margin (round 2: 50 tied movies, the cut inside
+them, kept indices 10-14 instead of 0-4), so the search is repeated with twice as many until it is, or the index is
+exhausted.
 
 Builds run on one thread, so the same vectors give the same index (HNSW's parallel insertion is not deterministic).
 """
@@ -58,6 +62,9 @@ Float64Array = npt.NDArray[np.float64]
 
 KINDS = ("flat", "hnsw", "ivf")
 RESCORE_MARGIN = 16
+# How far below the n-th score (float64) the last fetched candidate must be before the cut is trusted: well above
+# float32's rounding of a 64-dimensional dot product of unit vectors (about 64 x 6e-8).
+CUT_TOLERANCE = 1e-5
 FAISS_VERSION: str = faiss.__version__
 # FAISS's bundled stubs lack some classes (SearchParametersHNSW) and type every index as the class first assigned.
 _faiss: Any = faiss
@@ -68,7 +75,7 @@ class IndexSpec:
     kind: str = "flat"
     m: int = 32  # hnsw: links per node
     ef_construction: int = 200  # hnsw: candidates kept while inserting
-    ef_search: int = 200  # hnsw: candidates kept while searching (FAISS uses max(ef_search, n))
+    ef_search: int = 200  # hnsw: candidates kept while searching; Retriever searches with max(ef_search, k)
     nlist: int = 64  # ivf: k-means cells
     nprobe: int = 8  # ivf: cells scored per query
 
@@ -177,12 +184,21 @@ class Retriever:
             raise ValueError("the query vector is not finite")
         excluded = np.empty(0, dtype=np.int64) if exclude is None else np.unique(np.asarray(exclude, dtype=np.int64))
         k = min(n + RESCORE_MARGIN, self.n_items)
-        params, keep = self._params(excluded, k)
-        _, ids = self.index.search(query, k, params=params)
-        del keep
-        found = ids[0][ids[0] >= 0].astype(np.int64)
-        scores = self.items[found].astype(np.float64) @ query[0].astype(np.float64)
-        order = np.lexsort((found, -scores))[:n]  # score descending, then index ascending; then the cut
+        while True:
+            params, keep = self._params(excluded, k)
+            _, ids = self.index.search(query, k, params=params)
+            del keep
+            found = ids[0][ids[0] >= 0].astype(np.int64)
+            scores = self.items[found].astype(np.float64) @ query[0].astype(np.float64)
+            order = np.lexsort((found, -scores))  # score descending, then index ascending
+            # Done when the index has nothing more to give, or the cut lies clearly above everything fetched beyond
+            # it: then no movie left out could tie with or beat the n-th in float64. Otherwise (a tie group wider
+            # than the margin straddles the cut; review round 2 of day 3) fetch twice as many and look again.
+            exhausted = len(found) < k or k >= self.n_items
+            if exhausted or len(found) <= n or scores[order[-1]] < scores[order[n - 1]] - CUT_TOLERANCE:
+                break
+            k = min(2 * k, self.n_items)
+        order = order[:n]
         out_ids: IntArray = found[order]
         out_scores: Float64Array = scores[order]
         return out_ids, out_scores

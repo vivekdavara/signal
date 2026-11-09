@@ -4,8 +4,10 @@ A movie recommender with online serving, built in five days on MovieLens: baseli
 two-tower retriever trained with in-batch negatives, FAISS retrieval, a ranking stage, a Redis feature store for
 online features, and a FastAPI service (retrieve → rank → filter) with a latency benchmark and an A/B test simulator.
 
-**Status: day 2 of 5** (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the two-tower retriever,
-chosen and reported by the same protocol, and what the split's time leak is worth to it). [DESIGN.md](DESIGN.md) is
+**Status: day 3 of 5** (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the two-tower retriever,
+chosen and reported by the same protocol, and what the split's time leak is worth to it; day 3: the history length
+chosen on validation, FAISS retrieval, a ranking stage, and a Redis feature store whose features equal the offline
+ones). [DESIGN.md](DESIGN.md) is
 the specification for all five days. CI runs on every push (see "Day 1 notes").
 
 ## Architecture
@@ -34,7 +36,8 @@ flowchart LR
   end
 ```
 
-Built so far: everything on the offline side except the FAISS index and the ranker (day 3).
+Built so far: the whole offline side, and of the online side the feature store and the FAISS retriever (day 3); the
+API, the user tower in NumPy on the request path and the filter are day 4.
 
 ## How to run
 
@@ -46,10 +49,17 @@ make check                                 # ruff, ruff format --check, mypy --s
 .venv/bin/signalrec baselines ml-1m        # results/ml-1m/baselines.json and a table
 .venv/bin/signalrec leakage ml-1m          # results/ml-1m/leakage.json
 .venv/bin/signalrec recommend ml-1m --user 1   # one user's recent likes and item-kNN's top 10, by title
-.venv/bin/signalrec twotower ml-1m         # results/ml-1m/twotower.json (about 13 minutes here)
+.venv/bin/signalrec twotower ml-1m         # results/ml-1m/twotower.json (day 3's grid: about 30 minutes here)
 .venv/bin/signalrec leakage-twotower ml-1m # results/ml-1m/leakage-twotower.json (needs twotower.json first)
 .venv/bin/python scripts/recency_ablation.py ml-1m --out results/ml-1m/recency-ablation.json
+.venv/bin/signalrec ranking ml-1m          # results/ml-1m/ranking.json: FAISS top 200 -> ranker (needs twotower.json)
+.venv/bin/python scripts/bench_retrieval.py ml-1m --out results/ml-1m/retrieval.json
+redis-server --port 6383 --daemonize yes --save "" --appendonly no   # the feature store's Redis (tests skip without)
+.venv/bin/python scripts/bench_featurestore.py ml-1m --out results/ml-1m/featurestore.json
+redis-cli -p 6383 shutdown nosave
 ```
+
+`make results` reruns every command behind the numbers below, day 2's into the `-day2` files.
 
 PyTorch runs on the CPU (`pip install torch` pulls in the right wheel on a Mac; on Linux, install the CPU-only wheel
 from `https://download.pytorch.org/whl/cpu` first, as CI does).
@@ -275,6 +285,82 @@ deeper in the list, as it was to popularity (day 1: Recall@50 +0.0043), and litt
 histories kept: NDCG@10 0.0523 against 0.0308, +0.0215 [+0.0094, +0.0356]. With so few users per bucket, an early
 bucket's model learns from very little, so that gap mixes the leak with plain data volume; this run can't separate
 them.
+
+## Results (day 3): history length, retrieval, ranking
+
+Measured on 2026-11-09 (Apple M3, macOS 26.6, Python 3.11.12, PyTorch 2.15.0, faiss-cpu 1.15.1, Redis 8.8.0), on
+battery, with a review agent or another run alongside the training runs, so their recorded seconds are not
+benchmarks. Every number is in the JSON named next to it.
+
+### The history length, chosen on validation (`signalrec twotower <dataset>`, `results/<dataset>/twotower.json`)
+
+Day 2 fixed the user tower's input at the last 50 positives and its recency ablation found 5 better; day 3 puts the
+length in the grid (1, 3, 5, 10, 20, 50 × τ 0.05, 0.1, 0.2, logQ on, 20 epochs each: 360 candidates). On ml-1m
+validation (best NDCG@10 per configuration; the chosen one in bold; every row's paired interval is in the JSON):
+
+| ml-1m validation | history 1 | 3 | 5 | 10 | 20 | 50 |
+|---|---|---|---|---|---|---|
+| τ=0.05 | 0.1127 | 0.1328 | 0.1230 | 0.1078 | 0.0901 | 0.0777 |
+| τ=0.1 | 0.1137 | **0.1357** | 0.1261 | 0.1110 | 0.0939 | 0.0799 |
+| τ=0.2 | 0.1099 | 0.1205 | 0.1135 | 0.0968 | 0.0835 | 0.0717 |
+
+Chosen: τ=0.1, 3 positives, 8 epochs. Only τ=0.05 with 3 positives is indistinguishable (paired [-0.0008, +0.0063]);
+every length of 10 or more loses with an interval starting above +0.018. 13 of the other 359 candidates are
+indistinguishable. Test, 6,034 users:
+
+| Model | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Coverage@10 |
+|---|---|---|---|---|---|
+| popularity | 0.0389 [0.0343, 0.0441] | 0.0193 [0.0166, 0.0221] | 0.1294 [0.1210, 0.1387] | 0.0385 [0.0355, 0.0417] | 0.037 |
+| item-kNN (k=3, shrink=10) | 0.0630 [0.0568, 0.0689] | 0.0314 [0.0280, 0.0349] | 0.1845 [0.1743, 0.1946] | 0.0581 [0.0544, 0.0618] | 0.213 |
+| two-tower, day 2 (history 50) | 0.1361 [0.1279, 0.1448] | 0.0713 [0.0663, 0.0766] | 0.3533 [0.3421, 0.3651] | 0.1186 [0.1134, 0.1238] | 0.626 |
+| two-tower, day 3 (history 3, τ=0.1, 8 epochs) | 0.2176 [0.2067, 0.2285] | 0.1220 [0.1155, 0.1286] | 0.4581 [0.4458, 0.4717] | 0.1747 [0.1683, 0.1808] | 0.632 |
+
+Seeds 0, 1, 2: 0.1220, 0.1250, 0.1239. Two-tower minus item-kNN (paired): validation +0.0971 [+0.0903, +0.1048],
+test +0.0906 [+0.0839, +0.0975]. **ml-latest-small** chose τ=0.1, 3 positives, 14 epochs: test NDCG@10 0.0609
+[0.0466, 0.0768] (day 2: 0.0523; item-kNN 0.0360), and 9 of the other 17 configurations are indistinguishable on
+its 601 users. Day 2's grid run through today's code (`--grid` of day 2's six pairs, `--histories 50`) reproduces
+`twotower-day2.json` exactly on ml-latest-small: every learning-curve point, the test metrics and all three seeds.
+
+### How much of that is the same-second order? (`python scripts/same_second.py ml-1m`, `results/ml-1m/same-second.json`)
+
+A jump from 0.0713 to 0.1220 by reading fewer positives needed a check. The split orders a user's positives by
+(timestamp, movie id), and ml-1m users rated dozens of movies per second: for **31.4%** of users (1,897) the test
+movie has the same timestamp as the validation movie, so which one is "next" was decided by movie id, not by the
+user. A model reading the last three positives can learn from that order. Post hoc, on test, NDCG@10 by group:
+
+| Users | day 3 (history 3) | day 2 (history 50) | item-kNN | popularity | day 3 − day 2 (paired) |
+|---|---|---|---|---|---|
+| tied (1,897) | 0.2046 | 0.1004 | 0.0409 | 0.0182 | +0.1042 [+0.0901, +0.1175] |
+| untied (4,137) | 0.0841 | 0.0579 | 0.0271 | 0.0198 | +0.0262 [+0.0191, +0.0328] |
+| all (6,034) | 0.1220 | 0.0713 | 0.0314 | 0.0193 | +0.0507 [+0.0435, +0.0573] |
+
+The shorter history is better for untied users too, and the two-tower model's lead over item-kNN survives there
+(+0.0570 [+0.0492, +0.0643]); but about two thirds of the overall gain (1,897 × 0.1042 of 6,034 × 0.0507) comes from
+the tied third, where every model scores higher and the order inside the second is partly an artefact of the split.
+The reported number stays the protocol's (the split was fixed on day 1, before any model); the untied row is the
+better guide to what the model would do on a user's genuinely next movie. Day 2's leakage numbers
+(`leakage-twotower*.json`) are about day 2's model, whose configuration each file records.
+
+### Retrieval → ranking (`signalrec ranking <dataset>`, `results/<dataset>/ranking.json`)
+
+The day-3 two-tower model retrieves 200 unseen movies per user with the exact FAISS index (the retrieved order is
+exactly its full-ranking order: a test); a ranker re-orders them. On ml-1m the validation movie is among the 200 for
+72.7% of users and the test movie for 69.2%: the ranker's ceiling. Chosen on the 1,207 selection users (20% of the
+validation users; the other 80% train it): a 64-unit hidden layer, 15 epochs (linear 0.1392, 16 units 0.1398, 64 units
+0.1416 against the retrieved order's 0.1344; chosen minus retrieved +0.0072 [-0.0004, +0.0145], so validation alone
+doesn't exclude zero). Test:
+
+| ml-1m test | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Recall@200 |
+|---|---|---|---|---|---|
+| retrieved order | 0.2176 [0.2067, 0.2285] | 0.1220 [0.1155, 0.1286] | 0.4581 [0.4458, 0.4717] | 0.1747 [0.1683, 0.1808] | 0.6924 |
+| re-ranked | 0.2310 [0.2201, 0.2416] | 0.1292 [0.1225, 0.1357] | 0.4718 [0.4587, 0.4844] | 0.1820 [0.1754, 0.1885] | 0.6924 |
+| re-ranked − retrieved (paired) | +0.0134 [+0.0076, +0.0192] | +0.0072 [+0.0042, +0.0102] | +0.0138 [+0.0075, +0.0199] | +0.0073 [+0.0047, +0.0099] | 0 |
+
+A small, real gain: 6% relative on NDCG@10. Which features carry it (post hoc, selection users, the chosen settings
+retrained without each one): only the similarity to the last positive (-0.0073 [-0.0141, -0.0014]) and genre affinity
+(-0.0031 [-0.0063, -0.0002]) are distinguishable from zero; "year unknown" is constant on ml-1m (every title has a
+year). On **ml-latest-small** the ranker doesn't help NDCG@10 (-0.0023 [-0.0122, +0.0100]; Recall@50 +0.0316
+[+0.0116, +0.0532]): 481 training lists, 223 of them with the held-out movie.
 
 ## Day 1 notes
 

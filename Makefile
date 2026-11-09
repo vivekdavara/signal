@@ -27,13 +27,22 @@ data:
 	for d in $(DATASETS); do $(SIGNALREC) download $$d && $(SIGNALREC) prepare $$d || exit 1; done
 
 # Every number in the README's results: the baselines and the leakage on both datasets, then the ml-1m benchmark
-# (about 2 minutes on an M3; take the benchmark on a quiet machine), then day 2's two-tower model, what the leak is
-# worth to it (10 and 20 buckets), and the recency ablation (about 55 minutes on an M3; leakage-twotower reads
-# twotower.json).
+# (about 2 minutes on an M3; take the benchmark on a quiet machine); then day 2's two-tower grid, what the leak is worth
+# to it (10 and 20 buckets) and the recency ablation (about 55 minutes on an M3), all into the day-2 files; then day
+# 3's grid (history length crossed with temperature, about 30 minutes), the ranker on its candidates, and the retrieval
+# and feature-store benchmarks (take those on a quiet machine; the feature store needs Redis on 6383).
+DAY2_GRID := 0.05:on,0.05:off,0.1:on,0.1:off,0.2:on,0.2:off
+
 results: data
 	for d in $(DATASETS); do $(SIGNALREC) baselines $$d && $(SIGNALREC) leakage $$d || exit 1; done
 	$(SIGNALREC) baselines ml-1m --grid 10:0 --out results/ml-1m/post-hoc-item-knn-k10.json
 	$(PY) scripts/bench_pipeline.py ml-1m --repeats 5 --out results/ml-1m/bench.json
-	for d in $(DATASETS); do $(SIGNALREC) twotower $$d --quiet && $(SIGNALREC) leakage-twotower $$d || exit 1; done
-	$(SIGNALREC) leakage-twotower ml-1m --buckets 20 --out results/ml-1m/leakage-twotower-20-buckets.json
-	$(PY) scripts/recency_ablation.py ml-1m --out results/ml-1m/recency-ablation.json
+	for d in $(DATASETS); do \
+	  $(SIGNALREC) twotower $$d --grid $(DAY2_GRID) --histories 50 --quiet --out results/$$d/twotower-day2.json && \
+	  $(SIGNALREC) leakage-twotower $$d --from results/$$d/twotower-day2.json || exit 1; done
+	$(SIGNALREC) leakage-twotower ml-1m --from results/ml-1m/twotower-day2.json --buckets 20 \
+	  --out results/ml-1m/leakage-twotower-20-buckets.json
+	$(PY) scripts/recency_ablation.py ml-1m --from results/ml-1m/twotower-day2.json \
+	  --out results/ml-1m/recency-ablation.json
+	for d in $(DATASETS); do $(SIGNALREC) twotower $$d --quiet && $(SIGNALREC) ranking $$d --quiet || exit 1; done
+	$(PY) scripts/bench_retrieval.py ml-1m --out results/ml-1m/retrieval.json

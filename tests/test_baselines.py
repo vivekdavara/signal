@@ -168,3 +168,15 @@ def test_neighbours_agree_with_the_plain_float_definition(x: np.ndarray, k: int,
 def test_item_knn_refuses_a_zero_block_when_built() -> None:
     with pytest.raises(ValueError, match="item-kNN needs"):
         ItemKNN(k=5, block=0)
+
+
+@pytest.mark.parametrize(("k", "block"), [(True, 64), (5, 2.0), (5.0, 64), (5, True)])
+def test_item_knn_needs_integer_k_and_block(k: object, block: object) -> None:
+    # Review rounds 2 and 3 of day 2: k=5.0 failed only at fit; a bool or a float block must be refused too.
+    with pytest.raises(ValueError):
+        ItemKNN(k=k, block=block)  # type: ignore[arg-type]
+
+
+def test_item_knn_takes_numpy_integers() -> None:
+    model = ItemKNN(k=np.int64(5), block=np.int64(64))  # type: ignore[arg-type]
+    assert model.k == 5

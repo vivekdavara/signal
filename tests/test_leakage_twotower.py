@@ -251,7 +251,12 @@ def test_each_buckets_numbers_are_its_own_models(prepared: Prepared) -> None:
         leaky = ev.ranks(leaky_scores.score(users), history[users], prepared.test_items[users])
         assert row["ndcg@10"]["as of the cut"] == float(ev.ndcg_at(as_of, 10).mean())
         assert row["ndcg@10"]["leaky"] == float(ev.ndcg_at(leaky, 10).mean())
-        own_net, _ = tt.train(lt.events_before(prepared, cut, keep_users=users), genres, CONFIG)
+        assert row["latest test time"] == datetime.fromtimestamp(int(prepared.test_times[users].max()), UTC).isoformat()
+        own_seq = lt.events_before(prepared, cut, keep_users=users)
+        assert row["training examples, own histories kept"] == len(tt.example_positions(own_seq)[0])
+        assert row["training examples, own histories kept"] != row["training examples"]
+        assert row["trained, own histories kept"] is True
+        own_net, _ = tt.train(own_seq, genres, CONFIG)
         own_scores = tt.embed(own_net, test_seq, CONFIG.max_history).score(users)
         own = ev.ranks(own_scores, history[users], prepared.test_items[users])
         assert row["ndcg@10"]["as of the cut, own histories kept"] == float(ev.ndcg_at(own, 10).mean())
@@ -281,14 +286,25 @@ def _handmade(val_times: list[int]) -> Prepared:
     )
 
 
-def test_exactly_two_examples_before_the_cut_are_trained_on() -> None:
+def test_exactly_two_examples_before_the_cut_are_trained_on(monkeypatch: pytest.MonkeyPatch) -> None:
     # Cut 30 (user 0's test time): users 0 and 1 have training (10) and validation (20) before it, user 2 only training
     # (its validation is at 40): 1 + 1 + 0 = 2 examples, the smallest batch that has a negative.
     p = _handmade([20, 20, 40])
     config = tt.Config(dim=4, hidden=4, batch_size=2, epochs=1, seed=9)
+    seen: list[tt.Sequences] = []
+    real_train = tt.train
+
+    def spy(seq: tt.Sequences, *args: Any, **kwargs: Any) -> Any:
+        seen.append(seq)
+        return real_train(seq, *args, **kwargs)
+
+    monkeypatch.setattr(tt, "train", spy)
     first = lt.run(p, config, buckets=3)["buckets"][0]
     assert first["training examples"] == 2
     assert first["trained"] is True
+    # ... and a model really was trained on those two (review round 3: a ">" mutant left it untrained, row unchanged).
+    want = lt.events_before(p, 30)
+    assert any(seq.items.tolist() == want.items.tolist() for seq in seen[1:])
 
 
 def test_the_untrained_as_of_model_is_the_seeds_initial_weights() -> None:
@@ -300,6 +316,8 @@ def test_the_untrained_as_of_model_is_the_seeds_initial_weights() -> None:
     result = lt.run(p, config, buckets=1)
     (row,) = result["buckets"]
     assert row["trained"] is False
+    # Keeping the bucket's own histories gives the second model 3 examples, so it is trained (review round 3).
+    assert row["trained, own histories kept"] is True
     torch.manual_seed(config.seed)
     net = tt.TwoTowerNet(tt.genre_matrix(p.genres)[0], config.dim, config.hidden)
     test_seq = tt.sequences(p, include_val=True)
@@ -310,3 +328,37 @@ def test_the_untrained_as_of_model_is_the_seeds_initial_weights() -> None:
 
 def test_users_with_equal_test_times_are_bucketed_by_index() -> None:
     assert [b.tolist() for b in lt.bucket_users(np.array([5, 5, 5], dtype=np.int64), 3)] == [[0], [1], [2]]
+
+
+def test_the_command_prints_both_estimates(data_dir: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Review round 3: printing the strict numbers under the own-histories label survived.
+    source = tmp_path / "twotower.json"
+    source.write_text(json.dumps(_two_tower_results(data_dir)))
+    out = tmp_path / "leakage-twotower.json"
+    assert _leakage(data_dir, source, "--buckets", "2", "--out", str(out)) == 0
+    printed = capsys.readouterr().out
+    result = json.loads(out.read_text())
+    strict = result[lt.COMPARISON]["ndcg@10"][lt.AS_OF]
+    own = result[lt.COMPARISON_OWN]["ndcg@10"][lt.AS_OF_OWN]
+    assert strict != own
+    assert "two-tower ndcg@10: leaky " in printed
+    assert f", as of the cut {strict:.4f}," in printed
+    assert f", as of the cut, own histories kept {own:.4f}," in printed
+
+
+def test_one_bucket_per_user_is_allowed(data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Review round 3: the bound's boundary (buckets == users is fine, one more isn't) was untested.
+    source = tmp_path / "twotower.json"
+    source.write_text(json.dumps(_two_tower_results(data_dir)))
+    n_users = prepare.load(data_dir / "processed" / "synthetic", "synthetic").n_users
+    asked: list[int] = []
+
+    def stub(p: Prepared, config: tt.Config, buckets: int) -> dict[str, Any]:
+        asked.append(buckets)
+        return {lt.COMPARISON: {}, lt.COMPARISON_OWN: {}}
+
+    monkeypatch.setattr(lt, "run", stub)
+    out = str(tmp_path / "out.json")
+    assert _leakage(data_dir, source, "--buckets", str(n_users), "--out", out) == 0
+    assert _leakage(data_dir, source, "--buckets", str(n_users + 1), "--out", out) == 1
+    assert asked == [n_users]

@@ -89,3 +89,27 @@ def test_the_script_scores_validation_with_training_history(tmp_path: Path) -> N
     key = "minus the reported history length, ndcg@10, paired ci95"
     assert rows["item-knn, last all"][key] == [0.0, 0.0]
     assert rows[f"two-tower, last {config.max_history}"][key] == [0.0, 0.0]
+
+
+def test_the_reference_is_the_reported_history_length(tmp_path: Path) -> None:
+    # Review round 3: round 2's fix (the reported max_history always a row, and the reference) had no test; and the
+    # prepared-data check was untested here.
+    assert cli.main(["synthetic", "--data-dir", str(tmp_path), "--users", "50", "--items", "80"]) == 0
+    assert cli.main(["prepare", "synthetic", "--data-dir", str(tmp_path)]) == 0
+    source = tmp_path / "twotower.json"
+    args = ["twotower", "synthetic", "--data-dir", str(tmp_path), "--grid", "0.1:on", "--epochs", "1", "--seeds", "0"]
+    assert cli.main([*args, "--knn-grid", "5:0", "--quiet", "--out", str(source)]) == 0
+    result = json.loads(source.read_text())
+    result["fixed"]["max_history"] = 7
+    source.write_text(json.dumps(result))
+    out = tmp_path / "recency.json"
+    argv = ["synthetic", "--data-dir", str(tmp_path), "--from", str(source), "--out", str(out)]
+    assert recency_ablation.main(argv) == 0
+    rows = {row["model"]: row for row in json.loads(out.read_text())["rows"]}
+    key = "minus the reported history length, ndcg@10, paired ci95"
+    assert rows["two-tower, last 7"][key] == [0.0, 0.0]
+    assert any(r[key] != [0.0, 0.0] for name, r in rows.items() if name.startswith("two-tower"))
+    result["prepared"]["counts"]["users"] += 1
+    source.write_text(json.dumps(result))
+    with pytest.raises(prepare.PrepareError, match="other prepared data"):
+        recency_ablation.main(argv)

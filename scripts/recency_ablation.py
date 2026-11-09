@@ -80,7 +80,12 @@ def main(argv: list[str]) -> int:
     seq = tt.sequences(p, include_val=False)
     genres, _ = tt.genre_matrix(p.genres)
 
-    knn = ItemKNN(k=int(knn_params["k"]), shrink=float(knn_params["shrink"]))
+    # No int()/float() coercion: "k": true or 2.7 must be refused, not run as 1 or 2 (review round 3). ItemKNN checks
+    # that k is an integer; the shrink must be a number and not a bool.
+    k, shrink = knn_params["k"], knn_params["shrink"]
+    if isinstance(shrink, bool) or not isinstance(shrink, int | float):
+        raise ValueError(f"{source}: item-kNN shrink {shrink!r} is not a number")
+    knn = ItemKNN(k=k, shrink=float(shrink))
     knn.fit(history)
     longest = int(np.diff(seq.starts).max())
     per_user: dict[str, ev.FloatArray] = {}

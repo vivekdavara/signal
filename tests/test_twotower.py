@@ -305,6 +305,12 @@ def test_log_q_is_each_targets_share() -> None:
         {"temperature": 1e-39},
         {"logq": "off"},
         {"logq": 1},
+        # Review round 3: strings, an lr above MAX_LR, and an int too large for a float.
+        {"temperature": "0.1"},
+        {"lr": "0.01"},
+        {"lr": 2.0},
+        {"lr": 10**400},
+        {"temperature": 0.000999},
     ],
 )
 def test_bad_configs_are_refused(change: dict[str, object]) -> None:
@@ -335,3 +341,9 @@ def test_every_seed_torch_takes_is_accepted(seed: int) -> None:
 @pytest.mark.parametrize("temperature", [tt.MIN_TEMPERATURE, 0.05, 1.0, 100])
 def test_sane_temperatures_are_accepted(temperature: float) -> None:
     tt.Config(temperature=temperature).check()
+
+
+def test_the_floors_and_ceilings_are_what_the_docs_say() -> None:
+    assert tt.MIN_TEMPERATURE == 1e-3
+    assert tt.MAX_LR == 1.0
+    tt.Config(lr=tt.MAX_LR, temperature=np.float64(0.1)).check()

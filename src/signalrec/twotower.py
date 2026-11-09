@@ -37,6 +37,7 @@ Float64Array = npt.NDArray[np.float64]
 
 
 MIN_TEMPERATURE = 1e-3
+MAX_LR = 1.0
 
 
 class TrainingError(ValueError):
@@ -64,9 +65,21 @@ class Config:
             raise ValueError("batch_size must be at least 2: in-batch negatives need another example")
         for name in ("temperature", "lr"):
             value = getattr(self, name)
-            # type() and not isinstance: True is an int, and "temperature": true is not 1.0 (review round 2).
-            if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            # Not a bool: True is an int, and "temperature": true is not 1.0 (review round 2). A NumPy float is a
+            # float and fine (round 3: round 2's type() test refused it). An int too large for a float is refused,
+            # not an OverflowError from isfinite (round 3).
+            if isinstance(value, bool) or not isinstance(value, int | float):
                 raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
+            try:
+                number = float(value)
+            except OverflowError:
+                number = math.inf
+            if not math.isfinite(number) or number <= 0:
+                raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
+        # Round 3: a learning rate of 1e30 trained on NaN losses, as a tiny temperature had. Adam's step is about lr per
+        # weight, and the embeddings are O(0.1), so anything above 1 is a typo, not a setting.
+        if self.lr > MAX_LR:
+            raise ValueError(f"lr must be at most {MAX_LR}, got {self.lr!r}")
         # Logits are cosines divided by τ, in float32. Round 1 found NaN losses at τ = 1e-39 and bounded 1/τ by
         # float32's maximum; round 2 found that bound too loose (3e-39 is a denormal and still NaN, 1e-38 gives infinite
         # losses). A sane floor instead: logits at most 2,000 apart, far past any useful temperature (0.05-0.2 here).

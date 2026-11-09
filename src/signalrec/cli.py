@@ -164,7 +164,7 @@ def _reported_config(path: Path, dataset: str, manifest: dict[str, Any] | None =
             seed=result["test"]["two-tower"]["seed"],
         )
         config.check()
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, OverflowError) as exc:
         if isinstance(exc, prepare.PrepareError):
             raise
         raise prepare.PrepareError(f"{path}: not a two-tower results file ({exc!r}); run signalrec twotower") from None

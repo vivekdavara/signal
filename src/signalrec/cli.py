@@ -329,6 +329,14 @@ def _histories(spec: str) -> list[int]:
     return lengths
 
 
+def _candidates(text: str) -> int:
+    """At least the cut-off the ranker is chosen by: run refuses fewer, after loading everything (review round 2)."""
+    value = _positive_int(text)
+    if value < experiment_ranking.PRIMARY_K:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected at least {experiment_ranking.PRIMARY_K} candidates")
+    return value
+
+
 def _hidden_sizes(spec: str) -> list[int]:
     """Parse distinct ranker hidden sizes, 0 for a linear ranker: 0,16 -> [0, 16]."""
     try:
@@ -431,7 +439,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--hidden", type=_hidden_sizes, default=list(experiment_ranking.DEFAULT_HIDDEN), help="default: 0,16,64"
     )
     p.add_argument("--epochs", type=_positive_int, default=experiment_ranking.DEFAULT_EPOCHS)
-    p.add_argument("--candidates", type=_positive_int, default=experiment_ranking.N_CANDIDATES)
+    p.add_argument(
+        "--candidates",
+        type=_candidates,
+        default=experiment_ranking.N_CANDIDATES,
+        help=f"at least {experiment_ranking.PRIMARY_K}, the cut-off the ranker is chosen by (default 200)",
+    )
     p.add_argument("--out", type=Path, help="default: results/<dataset>/ranking.json")
     p.add_argument("--quiet", action="store_true", help="no progress on stderr")
     p.set_defaults(run=_ranking)

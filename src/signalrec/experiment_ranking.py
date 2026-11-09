@@ -141,26 +141,54 @@ def without(lists: rk.Lists, feature: int) -> rk.Lists:
     return rk.Lists(features, lists.mask, lists.labels)
 
 
+def best_ranker(
+    fit: rk.Lists, select: rk.Lists, hidden: Sequence[int], epochs: int, seed: int, n: int
+) -> tuple[float, int, int, rk.RankerWeights, dict[str, ev.FloatArray], list[dict[str, Any]]]:
+    """Train every hidden size for ``epochs`` epochs on ``fit``; the best (hidden, epoch) by NDCG@10 on ``select``
+    (ties to the earlier hidden size, then epoch). Returns its value, hidden size, epoch, weights, per-user metrics,
+    and every hidden size's learning curve."""
+    rows: list[dict[str, Any]] = []
+    best: tuple[float, int, int, rk.RankerWeights, dict[str, ev.FloatArray]] | None = None
+    for h in hidden:
+        snapshots: list[rk.RankerWeights] = []
+        t0 = time.perf_counter()
+        _, losses = rk.train(fit, rk.RankerConfig(hidden=h, epochs=epochs, seed=seed), snapshots)
+        seconds = time.perf_counter() - t0
+        curve = []
+        for epoch, weights in enumerate(snapshots, start=1):
+            per_user = metrics(rk.ranks_after(weights, select), n)
+            value = float(per_user[PRIMARY].mean())
+            curve.append({"epoch": epoch, "loss": losses[epoch - 1], PRIMARY: value})
+            if best is None or value > best[0]:  # strictly: a tie keeps the earlier candidate
+                best = (value, h, epoch, weights, per_user)
+        rows.append({"hidden": h, "train_seconds": seconds, "curve": curve})
+    if best is None:  # hidden is non-empty and epochs >= 1
+        raise RuntimeError("no ranker trained")
+    return (*best, rows)
+
+
 def feature_ablation(
     fit: rk.Lists,
     select: rk.Lists,
-    hidden: int,
+    hidden: Sequence[int],
     epochs: int,
     seed: int,
     chosen: dict[str, ev.FloatArray],
     n: int,
 ) -> list[dict[str, Any]]:
-    """Post hoc, on the selection users (validation): the chosen ranker's settings retrained with each feature removed,
-    and the paired NDCG@10 of (without it - the chosen ranker). Nothing is chosen from it."""
+    """Post hoc, on the selection users (validation): with each feature removed, a ranker chosen exactly as the full
+    one was (every hidden size and epoch, the best on the selection users), and the paired NDCG@10 of (without it -
+    the chosen ranker). Both sides are the best of the same grid on the same users, so neither gets the benefit of
+    the choice alone (review round 2: retraining only the full ranker's setting biased every drop upward)."""
     rows = []
     for i, name in enumerate(rk.FEATURES):
-        weights, _ = rk.train(without(fit, i), rk.RankerConfig(hidden=hidden, epochs=epochs, seed=seed))
-        per_user = metrics(rk.ranks_after(weights, without(select, i)), n)
+        value, h, epoch, _, per_user, _ = best_ranker(without(fit, i), without(select, i), hidden, epochs, seed, n)
         low, high = ev.paired_bootstrap_ci(per_user[PRIMARY], chosen[PRIMARY], seed=SEED)
         rows.append(
             {
                 "without": name,
-                PRIMARY: float(per_user[PRIMARY].mean()),
+                "chosen": {"hidden": h, "epochs": epoch},
+                PRIMARY: value,
                 f"minus the chosen ranker, {PRIMARY}": float(per_user[PRIMARY].mean() - chosen[PRIMARY].mean()),
                 "paired ci95": [low, high],
             }
@@ -198,28 +226,14 @@ def run(
     fit, select = val.lists.subset(fit_users), val.lists.subset(select_users)
     retrieved_select = metrics(rk.ranks_after(None, select), n)
 
-    rows: list[dict[str, Any]] = []
-    best: tuple[float, int, int, rk.RankerWeights, dict[str, ev.FloatArray]] | None = None
-    for h in hidden:
-        snapshots: list[rk.RankerWeights] = []
-        t0 = time.perf_counter()
-        _, losses = rk.train(fit, rk.RankerConfig(hidden=h, epochs=epochs, seed=seed), snapshots)
-        seconds = time.perf_counter() - t0
-        curve = []
-        for epoch, weights in enumerate(snapshots, start=1):
-            per_user = metrics(rk.ranks_after(weights, select), n)
-            value = float(per_user[PRIMARY].mean())
-            curve.append({"epoch": epoch, "loss": losses[epoch - 1], PRIMARY: value})
-            if best is None or value > best[0]:  # strictly: a tie keeps the earlier candidate
-                best = (value, h, epoch, weights, per_user)
-        rows.append({"hidden": h, "train_seconds": seconds, "curve": curve})
-        if progress is not None:
-            top = max(curve, key=lambda c: c[PRIMARY])
-            progress(f"ranker hidden {h}: best selection {PRIMARY} {top[PRIMARY]:.4f} at epoch {top['epoch']}")
-    if best is None:  # hidden is non-empty and epochs >= 1
-        raise RuntimeError("no ranker trained")
-    _, chosen_hidden, chosen_epoch, chosen, chosen_select = best
-    ablation = feature_ablation(fit, select, chosen_hidden, chosen_epoch, seed, chosen_select, n) if ablate else None
+    _, chosen_hidden, chosen_epoch, chosen, chosen_select, rows = best_ranker(fit, select, hidden, epochs, seed, n)
+    if progress is not None:
+        for row in rows:
+            top = max(row["curve"], key=lambda c: c[PRIMARY])
+            progress(
+                f"ranker hidden {row['hidden']}: best selection {PRIMARY} {top[PRIMARY]:.4f} at epoch {top['epoch']}"
+            )
+    ablation = feature_ablation(fit, select, hidden, epochs, seed, chosen_select, n) if ablate else None
 
     test = build_lists(p, config, include_val=True, n=n, progress=progress)
     retrieved_test = metrics(rk.ranks_after(None, test.lists), n)

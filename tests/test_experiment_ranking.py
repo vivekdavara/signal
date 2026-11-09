@@ -216,17 +216,24 @@ def test_cut_offs_above_the_candidate_count_are_not_reported() -> None:
     }
 
 
-def test_the_feature_ablation_retrains_without_each_feature(prepared: Prepared, result: dict[str, Any]) -> None:
+def test_the_feature_ablation_chooses_each_ranker_like_the_full_one(prepared: Prepared, result: dict[str, Any]) -> None:
+    # Review round 2: each ablated ranker gets the same choice (every hidden size and epoch, the best on the selection
+    # users) as the full one; recomputed here for two features.
     rows = result["feature ablation (selection users, post hoc)"]
     assert [row["without"] for row in rows] == list(rk.FEATURES)
     lists = er.build_lists(prepared, TT, include_val=False, n=N).lists
     fit_users, select_users = er.split_users(prepared.n_users)
-    chosen = result["chosen"]
-    config = rk.RankerConfig(hidden=chosen["hidden"], epochs=chosen["epochs"], seed=0)
-    for i in (0, 7):  # the retrieval score and the last-positive similarity, recomputed
-        weights, _ = rk.train(er.without(lists.subset(fit_users), i), config)
-        got = rk.ranks_after(weights, er.without(lists.subset(select_users), i))
-        assert rows[i]["ndcg@10"] == float(ev.ndcg_at(got, 10).mean())
+    for i in (0, 7):  # the retrieval score and the last-positive similarity
+        fit, select = er.without(lists.subset(fit_users), i), er.without(lists.subset(select_users), i)
+        candidates = []
+        for h in HIDDEN:
+            snapshots: list[rk.RankerWeights] = []
+            rk.train(fit, rk.RankerConfig(hidden=h, epochs=EPOCHS, seed=0), snapshots)
+            for epoch, weights in enumerate(snapshots, start=1):
+                candidates.append((float(ev.ndcg_at(rk.ranks_after(weights, select), 10).mean()), h, epoch))
+        best = max(candidates, key=lambda c: c[0])
+        assert rows[i]["ndcg@10"] == best[0]
+        assert rows[i]["chosen"] == {"hidden": best[1], "epochs": best[2]}
     assert len({row["ndcg@10"] for row in rows}) > 1
 
 

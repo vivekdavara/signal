@@ -202,8 +202,29 @@ The seed spread (0.002) is much smaller than the gap to item-kNN (0.040), and sm
 over users (about ±0.005).
 
 **Why does it beat item-kNN by so much?**
-See "Where does the lead come from?" in the README: the recency ablation scores item-kNN from only the most recent
-positives and trains the two-tower model with shorter and longer histories, all on validation.
+Partly recency. The user tower sees the last 50 positives; item-kNN sums over all of them. Post hoc, on validation
+only (`scripts/recency_ablation.py`), item-kNN scored from just the last 5 positives rises from 0.0386 to 0.0599, half
+its gap to the two-tower model. But with both given the same 5-item history the two-tower model still leads by two to
+one (0.1233 against 0.0599), so the learned representation is worth something on its own. The same ablation found
+that DESIGN's fixed 50-item history is far from the best (5 items: 0.1233 against 0.0799); I didn't switch, because
+that would be acting on one seed of a post-hoc look; day 3 puts the history length in the grid.
+
+**Does the split's time leak help the model more than it helped popularity?**
+On ml-1m, no. The first check (`leakage_twotower.py`) retrained the model, per test-time bucket, on only what existed
+before the bucket's earliest test time, and the score halved (0.0713 to 0.0354). That looked like a big leak but
+wasn't: the cut also removed each user's *own* recent positives, which are their past, not the future. Keeping the
+bucket's own users' histories gives 0.0712 against 0.0713 (paired +0.0001 [-0.0048, +0.0054]). The last bucket is a
+built-in check: with its own histories kept it trains on exactly the reported model's data and scores exactly the
+same. On ml-latest-small (60 users per bucket over 22 years) a gap remains, but there the early buckets also train on
+very little, so it mixes the leak with data volume.
+
+**What was the most important thing the reviews found?**
+That my tests couldn't see inside training. Every test recomputed results through the same `train` and `embed` it
+was checking, so a target leaking into its own history, an inverted logQ flag, an ignored temperature or an unmasked
+accidental hit all passed. The fix was to watch from outside: a spy on `histories` and `in_batch_loss` records what
+each batch actually feeds the loss, and each tower is recomputed by hand from its weights. Round 2's best catch was a
+reasoning error rather than a code bug: the as-of model trained on other users' test positives, which the model it
+was compared with never sees, so "the as-of model knows less" was false.
 
 **Why is the evaluation code unchanged?**
 `evaluate.evaluate` takes any `Scorer` (a name and a `score(users)` method). The trained towers are exported to NumPy

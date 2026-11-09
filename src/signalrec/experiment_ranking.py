@@ -37,6 +37,7 @@ from signalrec import twotower as tt
 from signalrec.prepare import Prepared
 
 PRIMARY = experiment.PRIMARY  # "ndcg@10"
+PRIMARY_K = experiment.PRIMARY_K
 SEED = experiment.SEED
 N_CANDIDATES = 200
 DEFAULT_HIDDEN = (0, 16, 64)
@@ -93,10 +94,16 @@ def build_lists(
 
 
 def metrics(ranks: ev.IntArray, n: int) -> dict[str, ev.FloatArray]:
+    """Per-user Recall@K and NDCG@K for each K in ``KS`` up to ``n``, and Recall@n.
+
+    Only cut-offs up to ``n``: a movie that wasn't retrieved has rank ``n + 1``, which a larger cut-off would count as
+    a hit (with 20 candidates, Recall@50 would have counted every miss).
+    """
     out = {}
     for k in KS:
-        out[f"recall@{k}"] = ev.recall_at(ranks, k)
-        out[f"ndcg@{k}"] = ev.ndcg_at(ranks, k)
+        if k <= n:
+            out[f"recall@{k}"] = ev.recall_at(ranks, k)
+            out[f"ndcg@{k}"] = ev.ndcg_at(ranks, k)
     out[f"recall@{n}"] = ev.recall_at(ranks, n)
     return out
 
@@ -132,8 +139,10 @@ def _check_inputs(hidden: Sequence[int], epochs: int, n: int, seed: int) -> None
         raise ValueError("no hidden sizes")
     if len(set(hidden)) != len(hidden):
         raise ValueError(f"hidden sizes repeat: {list(hidden)}")
-    if type(n) is not int or n < 1:
-        raise ValueError(f"the candidate count must be an integer >= 1, got {n!r}")
+    if type(n) is not int or n < PRIMARY_K:
+        raise ValueError(
+            f"the candidate count must be an integer >= {PRIMARY_K} (the choice is by {PRIMARY}), got {n!r}"
+        )
     for h in hidden:
         rk.RankerConfig(hidden=h, epochs=epochs, seed=seed).check()
 

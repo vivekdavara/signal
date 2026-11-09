@@ -241,7 +241,7 @@ def _ranking(args: argparse.Namespace) -> int:
     n = result["candidates"]
     test = result["test"]
     print(f"held-out movie in the top {n}: {test['held-out movie retrieved (share of users)']:.4f} of test users")
-    for name in ("ndcg@10", "recall@10", "recall@50"):
+    for name in [m for m in ("ndcg@10", "recall@10", "recall@50") if m in test["re-ranked"]]:
         diff = result["re-ranked minus retrieved order (paired, test)"][name]
         low, high = diff["ci95"]
         print(

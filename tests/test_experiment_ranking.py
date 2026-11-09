@@ -102,7 +102,7 @@ def test_test_numbers_come_from_the_chosen_weights_on_the_test_lists(
     lists = er.build_lists(prepared, TT, include_val=True, n=N).lists
     ranked = er.metrics(rk.ranks_after(weights, lists), N)
     retrieved = er.metrics(rk.ranks_after(None, lists), N)
-    for name in ("ndcg@10", "recall@50", f"recall@{N}"):
+    for name in ("ndcg@10", "recall@20", f"recall@{N}"):  # N = 30: no cut-off above it is reported
         assert result["test"]["re-ranked"][name]["value"] == float(ranked[name].mean())
         assert result["test"]["retrieved order"][name]["value"] == float(retrieved[name].mean())
         diff = result["re-ranked minus retrieved order (paired, test)"][name]
@@ -148,7 +148,13 @@ def test_runs_are_reproducible(prepared: Prepared, result: dict[str, Any]) -> No
 
 @pytest.mark.parametrize(
     ("hidden", "epochs", "n", "message"),
-    [((), 2, 10, "no hidden sizes"), ((4, 4), 2, 10, "repeat"), ((0,), 0, 10, "epochs"), ((0,), 2, 0, "candidate")],
+    [
+        ((), 2, 10, "no hidden sizes"),
+        ((4, 4), 2, 10, "repeat"),
+        ((0,), 0, 10, "epochs"),
+        ((0,), 2, 0, "candidate"),
+        ((0,), 2, 9, "candidate"),  # fewer candidates than the choice's cut-off
+    ],
 )
 def test_bad_inputs_are_refused_before_training(
     prepared: Prepared, monkeypatch: pytest.MonkeyPatch, hidden: Any, epochs: int, n: int, message: str
@@ -186,3 +192,21 @@ def test_bad_ranking_flags_are_usage_errors(flags: list[str], capsys: pytest.Cap
         cli.main(["ranking", "synthetic", *flags])
     assert exit_info.value.code == 2
     assert "usage" in capsys.readouterr().err
+
+
+def test_cut_offs_above_the_candidate_count_are_not_reported() -> None:
+    # A movie that wasn't retrieved ranks n + 1. With 20 candidates that is 21, inside Recall@50: so no cut-off above
+    # n may be reported (it counted every miss as a hit before this fix).
+    ranks = np.array([1, 21, 21, 5], dtype=np.int64)  # two users' movies not retrieved
+    got = er.metrics(ranks, 20)
+    assert set(got) == {"recall@10", "ndcg@10", "recall@20", "ndcg@20"}
+    assert got["recall@20"].tolist() == [1, 0, 0, 1]
+    assert set(er.metrics(ranks, 200)) == {
+        "recall@10",
+        "ndcg@10",
+        "recall@20",
+        "ndcg@20",
+        "recall@50",
+        "ndcg@50",
+        "recall@200",
+    }

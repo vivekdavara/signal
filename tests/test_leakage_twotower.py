@@ -159,7 +159,10 @@ def _two_tower_results(data_dir: Path, **changes: Any) -> dict[str, Any]:
 
 
 def _leakage(data_dir: Path, source: Path, *flags: str) -> int:
-    return cli.main(["leakage-twotower", "synthetic", "--data-dir", str(data_dir), "--from", str(source), *flags])
+    # Always an --out under the temporary data directory: a mutant that lets a refused run through must not write to
+    # the repository's results/ (one did, at 18:37 on day 2).
+    out = [] if "--out" in flags else ["--out", str(data_dir / "default-out.json")]
+    return cli.main(["leakage-twotower", "synthetic", "--data-dir", str(data_dir), "--from", str(source), *flags, *out])
 
 
 def test_the_command_reads_the_reported_configuration(

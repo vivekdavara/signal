@@ -73,10 +73,17 @@ class IndexSpec:
         return "flat (exact)"
 
 
-def _single_thread() -> int:
+def set_threads(n: int) -> int:
+    """Set FAISS's OpenMP thread count; returns the previous one."""
+    if type(n) is not int or n < 1:
+        raise ValueError(f"threads must be an integer >= 1, got {n!r}")
     before: int = faiss.omp_get_max_threads()
-    faiss.omp_set_num_threads(1)
+    faiss.omp_set_num_threads(n)
     return before
+
+
+def _single_thread() -> int:
+    return set_threads(1)
 
 
 def build(items: Float32Array, spec: IndexSpec) -> Any:

@@ -46,7 +46,7 @@
     "rankers": [
       {
         "hidden": 0,
-        "train_seconds": 0.17606674996204674,
+        "train_seconds": 0.17439587495755404,
         "curve": [
           {
             "epoch": 1,
@@ -152,7 +152,7 @@
       },
       {
         "hidden": 16,
-        "train_seconds": 0.4638079999713227,
+        "train_seconds": 0.4485327920410782,
         "curve": [
           {
             "epoch": 1,
@@ -258,7 +258,7 @@
       },
       {
         "hidden": 64,
-        "train_seconds": 0.932772875064984,
+        "train_seconds": 0.9464718339731917,
         "curve": [
           {
             "epoch": 1,
@@ -364,9 +364,9 @@
       }
     ],
     "seconds": {
-      "train two-tower": 17.903219208004884,
-      "retrieve": 0.5779972593300045,
-      "features": 0.14698859280906618
+      "train two-tower": 17.141250832937658,
+      "retrieve": 0.5714930493850261,
+      "features": 0.1429704687325284
     }
   },
   "chosen": {
@@ -427,51 +427,75 @@
   "feature ablation (selection users, post hoc)": [
     {
       "without": "retrieval score",
-      "ndcg@10": 0.13635623068318367,
-      "minus the chosen ranker, ndcg@10": -0.005527912945174518,
+      "chosen": {
+        "hidden": 64,
+        "epochs": 8
+      },
+      "ndcg@10": 0.1386518657796351,
+      "minus the chosen ranker, ndcg@10": -0.0032322778487230974,
       "paired ci95": [
-        -0.010360433734461279,
-        -0.00035809388749958205
+        -0.008371857765245369,
+        0.0020213783811549512
       ]
     },
     {
       "without": "log retrieval rank",
-      "ndcg@10": 0.13987122286255807,
-      "minus the chosen ranker, ndcg@10": -0.002012920765800119,
+      "chosen": {
+        "hidden": 64,
+        "epochs": 15
+      },
+      "ndcg@10": 0.1414701086661962,
+      "minus the chosen ranker, ndcg@10": -0.00041403496216199653,
       "paired ci95": [
-        -0.006462083703911824,
-        0.002374731959684642
+        -0.004933419341830106,
+        0.004124456332474163
       ]
     },
     {
       "without": "log popularity",
-      "ndcg@10": 0.13919147086839628,
-      "minus the chosen ranker, ndcg@10": -0.002692672759961906,
+      "chosen": {
+        "hidden": 64,
+        "epochs": 18
+      },
+      "ndcg@10": 0.1413627261511121,
+      "minus the chosen ranker, ndcg@10": -0.0005214174772461,
       "paired ci95": [
-        -0.00647956526841041,
-        0.0008007271563329172
+        -0.00400192608465638,
+        0.002756184674946074
       ]
     },
     {
       "without": "genre affinity",
-      "ndcg@10": 0.1395077296151332,
-      "minus the chosen ranker, ndcg@10": -0.002376414013224998,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 13
+      },
+      "ndcg@10": 0.1417401990806373,
+      "minus the chosen ranker, ndcg@10": -0.00014394454772087562,
       "paired ci95": [
-        -0.005382711896331936,
-        0.0007277588508026893
+        -0.0042343759852844914,
+        0.0040947424420599106
       ]
     },
     {
       "without": "year distance",
-      "ndcg@10": 0.1393612137572011,
-      "minus the chosen ranker, ndcg@10": -0.002522929871157098,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 7
+      },
+      "ndcg@10": 0.14139759017321227,
+      "minus the chosen ranker, ndcg@10": -0.00048655345514592163,
       "paired ci95": [
-        -0.005646564630273655,
-        0.0006950930396818002
+        -0.004832342684394118,
+        0.00373588539511743
       ]
     },
     {
       "without": "year unknown",
+      "chosen": {
+        "hidden": 64,
+        "epochs": 20
+      },
       "ndcg@10": 0.1418841436283582,
       "minus the chosen ranker, ndcg@10": 0.0,
       "paired ci95": [
@@ -481,20 +505,28 @@
     },
     {
       "without": "log user positives",
-      "ndcg@10": 0.14094154405406886,
-      "minus the chosen ranker, ndcg@10": -0.0009425995742893267,
+      "chosen": {
+        "hidden": 64,
+        "epochs": 11
+      },
+      "ndcg@10": 0.14311484117673753,
+      "minus the chosen ranker, ndcg@10": 0.0012306975483793448,
       "paired ci95": [
-        -0.0036883254027925798,
-        0.0016734968950691388
+        -0.002071698636684021,
+        0.004568912996901073
       ]
     },
     {
       "without": "similarity to the last positive",
-      "ndcg@10": 0.1324033727839182,
-      "minus the chosen ranker, ndcg@10": -0.00948077084443999,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 4
+      },
+      "ndcg@10": 0.13645007657115296,
+      "minus the chosen ranker, ndcg@10": -0.005434067057205227,
       "paired ci95": [
-        -0.01570672826728305,
-        -0.004006679274438387
+        -0.012234067617723561,
+        0.0012321748095617078
       ]
     }
   ],
@@ -603,9 +635,9 @@
       }
     },
     "seconds": {
-      "train two-tower": 18.54502845800016,
-      "retrieve": 0.5772043938050047,
-      "features": 0.14540955401025712
+      "train two-tower": 18.115286999964155,
+      "retrieve": 0.5821231495356187,
+      "features": 0.1457664464833215
     }
   },
   "re-ranked minus retrieved order (paired, test)": {

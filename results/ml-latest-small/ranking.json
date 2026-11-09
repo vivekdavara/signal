@@ -46,7 +46,7 @@
     "rankers": [
       {
         "hidden": 0,
-        "train_seconds": 0.013897958095185459,
+        "train_seconds": 0.012594416039064527,
         "curve": [
           {
             "epoch": 1,
@@ -152,7 +152,7 @@
       },
       {
         "hidden": 16,
-        "train_seconds": 0.030225208029150963,
+        "train_seconds": 0.02861666597891599,
         "curve": [
           {
             "epoch": 1,
@@ -258,7 +258,7 @@
       },
       {
         "hidden": 64,
-        "train_seconds": 0.06030162505339831,
+        "train_seconds": 0.054680332890711725,
         "curve": [
           {
             "epoch": 1,
@@ -364,9 +364,9 @@
       }
     ],
     "seconds": {
-      "train two-tower": 2.647514958982356,
-      "retrieve": 0.04759583261329681,
-      "features": 0.014856419758871198
+      "train two-tower": 2.4612728339852765,
+      "retrieve": 0.04744329082313925,
+      "features": 0.014405588852241635
     }
   },
   "chosen": {
@@ -427,51 +427,75 @@
   "feature ablation (selection users, post hoc)": [
     {
       "without": "retrieval score",
-      "ndcg@10": 0.03274373346817306,
-      "minus the chosen ranker, ndcg@10": -0.03416193070507697,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 20
+      },
+      "ndcg@10": 0.06065997759810267,
+      "minus the chosen ranker, ndcg@10": -0.006245686575147361,
       "paired ci95": [
-        -0.059353353975388524,
-        -0.012680238403387473
+        -0.020930555076352064,
+        0.008680464851052982
       ]
     },
     {
       "without": "log retrieval rank",
-      "ndcg@10": 0.053987662091813646,
-      "minus the chosen ranker, ndcg@10": -0.012918002081436383,
+      "chosen": {
+        "hidden": 64,
+        "epochs": 3
+      },
+      "ndcg@10": 0.05634805738229683,
+      "minus the chosen ranker, ndcg@10": -0.010557606790953196,
       "paired ci95": [
-        -0.031089649574311765,
-        0.003500866401140953
+        -0.02632582138392803,
+        0.0036430418685126295
       ]
     },
     {
       "without": "log popularity",
-      "ndcg@10": 0.058657606677468756,
-      "minus the chosen ranker, ndcg@10": -0.008248057495781273,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 9
+      },
+      "ndcg@10": 0.06052444570352832,
+      "minus the chosen ranker, ndcg@10": -0.006381218469721707,
       "paired ci95": [
-        -0.027172232196148966,
-        0.006971886646853378
+        -0.02482664584446792,
+        0.011864308175231321
       ]
     },
     {
       "without": "genre affinity",
-      "ndcg@10": 0.0590659478403783,
-      "minus the chosen ranker, ndcg@10": -0.007839716332871727,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 9
+      },
+      "ndcg@10": 0.06286376632796367,
+      "minus the chosen ranker, ndcg@10": -0.004041897845286357,
       "paired ci95": [
-        -0.021759052977540504,
-        0.0044181986204305
+        -0.020353055161879918,
+        0.011770018117889724
       ]
     },
     {
       "without": "year distance",
-      "ndcg@10": 0.05134055170642398,
-      "minus the chosen ranker, ndcg@10": -0.015565112466826049,
+      "chosen": {
+        "hidden": 16,
+        "epochs": 10
+      },
+      "ndcg@10": 0.05911763694577434,
+      "minus the chosen ranker, ndcg@10": -0.007788027227475687,
       "paired ci95": [
-        -0.03157366736966561,
-        -0.002850469521269208
+        -0.021958495287328805,
+        0.008212978027528375
       ]
     },
     {
       "without": "year unknown",
+      "chosen": {
+        "hidden": 16,
+        "epochs": 12
+      },
       "ndcg@10": 0.06690566417325003,
       "minus the chosen ranker, ndcg@10": 0.0,
       "paired ci95": [
@@ -481,6 +505,10 @@
     },
     {
       "without": "log user positives",
+      "chosen": {
+        "hidden": 16,
+        "epochs": 12
+      },
       "ndcg@10": 0.05945904309473749,
       "minus the chosen ranker, ndcg@10": -0.007446621078512537,
       "paired ci95": [
@@ -490,11 +518,15 @@
     },
     {
       "without": "similarity to the last positive",
-      "ndcg@10": 0.039904451453330735,
-      "minus the chosen ranker, ndcg@10": -0.027001212719919294,
+      "chosen": {
+        "hidden": 64,
+        "epochs": 2
+      },
+      "ndcg@10": 0.050662289734937124,
+      "minus the chosen ranker, ndcg@10": -0.016243374438312905,
       "paired ci95": [
-        -0.053259733254363964,
-        -0.0057641888837370375
+        -0.04489513772969199,
+        0.013466907357768369
       ]
     }
   ],
@@ -603,9 +635,9 @@
       }
     },
     "seconds": {
-      "train two-tower": 2.1349313750397414,
-      "retrieve": 0.04788584262132645,
-      "features": 0.014390497584827244
+      "train two-tower": 2.0596676249988377,
+      "retrieve": 0.04764149768743664,
+      "features": 0.013816114515066147
     }
   },
   "re-ranked minus retrieved order (paired, test)": {

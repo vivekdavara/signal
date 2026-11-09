@@ -358,12 +358,12 @@ validation users; the other 80% train it): a 64-unit hidden layer, 20 epochs (li
 A small, real gain: 6% relative on NDCG@10. The validation evidence for it is thin: the run before the review's
 retrieval fix (float32 retrieval scores, otherwise the same; `b41e283`) chose 15 epochs and its selection interval
 was [-0.0004, +0.0145], reaching zero, with a test gain of +0.0072 [+0.0042, +0.0102]. Which features carry it (post
-hoc, selection users, the chosen settings retrained without each one): the similarity to the last positive (-0.0095
-[-0.0157, -0.0040]) and the retrieval score (-0.0055 [-0.0104, -0.0004]) lose most, "year unknown" is constant on ml-1m
-(every title has a year). Review round 2 pointed out that this comparison is biased against every feature: the full
-ranker's setting is the best of 60 on these same users and the ablated ones get no such choice, which is why all seven
-non-constant drops are negative. Read the drops as upper bounds; only the last-positive similarity's is large next to
-that bias. On **ml-latest-small** the ranker doesn't help NDCG@10
+hoc, selection users; each feature removed and the ranker chosen again exactly as the full one was): **none is
+distinguishable from zero on its own**. The largest drops are the similarity to the last positive (-0.0054 [-0.0122,
++0.0012]) and the retrieval score (-0.0032 [-0.0084, +0.0020]); "year unknown" is constant on ml-1m (every title has a
+year). The first version retrained only the full ranker's chosen setting, which review round 2 showed biases every drop
+upward (the full ranker is the best of 60 settings on these users); it had reported those two as distinguishable
+(-0.0095 and -0.0055), and the symmetric comparison doesn't support that. On **ml-latest-small** the ranker doesn't help NDCG@10
 (-0.0023 [-0.0122, +0.0100]; Recall@50 +0.0316 [+0.0116, +0.0532]): 481 training lists, 223 of them with the held-out
 movie.
 
@@ -544,8 +544,9 @@ inside them: indices 10-14 kept instead of 0-4); the search now widens until the
 docs said `max(efSearch, n)` where the code uses n + 16 (docs fixed, its test adapted to the documented value);
 `FeatureStore.user(3.0)` still read an empty user, as round 1 had fixed only writes (`1ef51b5`); `--candidates 5`
 was a traceback, not a usage error (`4f66dc3`). Its 3 surviving mutants (rescoring in float32, `>=` for the int64
-bound, the bool refusal dropped) are killed. The ablation's bias above is its point too. Re-run after the fixes, the
-ranking results are identical and the benchmark's recalls unchanged.
+bound, the bool refusal dropped) are killed. Its suspicion that the feature ablation was biased (only the full ranker
+was chosen on the selection users) was right: chosen alike (`73d3c67`), no feature's drop excludes zero. Re-run after
+the fixes, the ranker's own results are identical and the benchmark's recalls unchanged.
 
 ## Design decisions
 
@@ -605,8 +606,8 @@ ranking results are identical and the benchmark's recalls unchanged.
   batch search hung, so `retrieval.py` imports torch first and searches one query at a time. The tests check FAISS's
   answers in that setting.
 - The ranker's gain on ml-1m (+0.0078 NDCG@10 on test) is barely established on validation: its selection-users
-  interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring. Its feature
-  ablation compares a chosen setting with unchosen ones on the same users, so every drop is biased upward.
+  interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring. No single feature
+  is shown to matter (the ablation's intervals all reach zero on 1,207 selection users).
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
   and above about 2^33 ≈ 8.6e9 times a pair's co-count rounds it to zero (checked: a co-count-1 pair survives a shrink
   of 8e9 and vanishes at 9e9). Nothing refuses such a shrink; the useful range is 0 to about 100.

@@ -6,7 +6,9 @@ the largest inner products: maximum inner product search. Three indexes:
 
 - **flat** (``IndexFlatIP``): every movie scored, the exact answer. The reference.
 - **hnsw** (``IndexHNSWFlat``): a navigable small-world graph; a query walks it greedily, keeping the ``ef_search``
-  best nodes seen. FAISS searches with ``max(ef_search, n)``, so asking for 200 candidates searches with at least 200.
+  best nodes seen. ``Retriever`` searches with ``max(ef_search, n)``: FAISS's search list stops at ``efSearch`` itself
+  (review of day 3: at 16 for n = 200 it returned about 0.65 of the exact top 200; this docstring had said FAISS
+  takes the maximum, which it doesn't).
 - **ivf** (``IndexIVFFlat``): k-means cells over the movies; a query scores only the movies in its ``nprobe`` nearest
   cells.
 
@@ -14,6 +16,12 @@ A user's history is excluded inside the search with an ID selector (``IDSelector
 index returns the best ``n`` movies they have not seen, rather than the best ``n`` overall with their history to be
 filtered afterwards (which would leave fewer than ``n`` for a heavy user). One query per call: that is the serving path
 (one request, one user), and a selector belongs to one query.
+
+The candidates come back in the protocol's order: rescored in float64 from the item vectors, best first, ties to the
+smaller movie index, as ``evaluate.top_k`` ranks (review of day 3: FAISS's flat index returned tied movies largest index
+first). FAISS scores in float32, so a movie just below the cut in float64 can come out just above it: the index is asked
+for ``RESCORE_MARGIN`` more candidates than requested, and the cut is made after rescoring (the same review: one of 149
+users' held-out movies, tied with a twin at the 30th place, was pushed out by such a movie).
 
 Builds run on one thread, so the same vectors give the same index (HNSW's parallel insertion is not deterministic).
 """
@@ -39,8 +47,10 @@ import numpy.typing as npt
 
 IntArray = npt.NDArray[np.int64]
 Float32Array = npt.NDArray[np.float32]
+Float64Array = npt.NDArray[np.float64]
 
 KINDS = ("flat", "hnsw", "ivf")
+RESCORE_MARGIN = 16
 FAISS_VERSION: str = faiss.__version__
 # FAISS's bundled stubs lack some classes (SearchParametersHNSW) and type every index as the class first assigned.
 _faiss: Any = faiss
@@ -122,14 +132,15 @@ class Retriever:
     def __init__(self, items: Float32Array, spec: IndexSpec | None = None) -> None:
         self.spec = spec or IndexSpec()
         self.index = build(items, self.spec)
+        self.items: Float32Array = np.array(items, dtype=np.float32)  # a copy: rescoring must see what was indexed
         self.n_items, self.dim = items.shape
 
-    def _params(self, exclude: IntArray) -> tuple[Any, list[Any]]:
+    def _params(self, exclude: IntArray, k: int) -> tuple[Any, list[Any]]:
         keep: list[Any] = []  # the selectors hold raw pointers into each other: keep them alive for the search
         params: Any
         if self.spec.kind == "hnsw":
             params = _faiss.SearchParametersHNSW()
-            params.efSearch = self.spec.ef_search
+            params.efSearch = max(self.spec.ef_search, k)  # k includes the margin
         elif self.spec.kind == "ivf":
             params = _faiss.SearchParametersIVF()
             params.nprobe = self.spec.nprobe
@@ -143,8 +154,9 @@ class Retriever:
             params.sel = not_seen
         return params, keep
 
-    def search(self, user: Float32Array, n: int, exclude: IntArray | None = None) -> tuple[IntArray, Float32Array]:
-        """Up to ``n`` movie ids, best first, none of them in ``exclude``, and their inner products.
+    def search(self, user: Float32Array, n: int, exclude: IntArray | None = None) -> tuple[IntArray, Float64Array]:
+        """Up to ``n`` movie ids, none of them in ``exclude``, and their inner products in float64: best first, ties to
+        the smaller index.
 
         Fewer than ``n`` when fewer movies are left, or when an approximate index finds fewer (an IVF query whose
         ``nprobe`` cells hold fewer unseen movies).
@@ -157,11 +169,13 @@ class Retriever:
         if not np.isfinite(query).all():
             raise ValueError("the query vector is not finite")
         excluded = np.empty(0, dtype=np.int64) if exclude is None else np.unique(np.asarray(exclude, dtype=np.int64))
-        params, keep = self._params(excluded)
-        k = min(n, self.n_items)
-        scores, ids = self.index.search(query, k, params=params)
+        k = min(n + RESCORE_MARGIN, self.n_items)
+        params, keep = self._params(excluded, k)
+        _, ids = self.index.search(query, k, params=params)
         del keep
-        found = ids[0] >= 0
-        out_ids: IntArray = ids[0][found].astype(np.int64)
-        out_scores: Float32Array = scores[0][found].astype(np.float32)
+        found = ids[0][ids[0] >= 0].astype(np.int64)
+        scores = self.items[found].astype(np.float64) @ query[0].astype(np.float64)
+        order = np.lexsort((found, -scores))[:n]  # score descending, then index ascending; then the cut
+        out_ids: IntArray = found[order]
+        out_scores: Float64Array = scores[order]
         return out_ids, out_scores

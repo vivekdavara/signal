@@ -76,6 +76,13 @@ item in these datasets. Instead the leak is **measured** (`signalrec leakage`): 
 than each user's test item, and popularity counted only from positives strictly before each user's test time against
 the usual popularity, compared with a paired bootstrap. The README reports both.
 
+For the two-tower model (day 2, `signalrec leakage-twotower`) a model can't be retrained per user, so users are cut
+into 10 buckets of equal size by test time, and for each bucket the reported configuration is retrained on the
+training + validation positives before the bucket's earliest test time (a subset of the leaky model's data), then
+compared paired with the reported model. That also drops the bucket's own users' recent positives, which are their
+own past, so a second model per bucket keeps them. Neither is a strict bound (`leakage_twotower.py` says which way
+each errs); the README reports both.
+
 ### Processed format
 
 `data/processed/<name>/` holds one `.npy` file per array (`train_users`, `train_items`, `train_times`, the same for
@@ -166,6 +173,11 @@ of two directories: a crash between the renames leaves the old one beside it und
   seeds 0, 1 and 2; seed 0 (the seed the grid used) is the reported row, the other two give the spread.
 
 ## Day 3: FAISS, ranking, the feature store
+
+- **First, the history length.** Day 2's post-hoc recency ablation found that the two-tower model does much better on
+  validation with 5-item histories than with DESIGN's fixed 50 (NDCG@10 0.1233 against 0.0799, one seed). Day 3 makes
+  the history length a dimension of the validation grid, so the protocol chooses it, and the retriever FAISS indexes
+  is the chosen one.
 
 - **Retrieval.** Item embeddings in FAISS: `IndexFlatIP` (exact) as the reference, then an approximate index (IVF or
   HNSW). Measured: recall of the approximate top 200 against the exact top 200, and query latency.

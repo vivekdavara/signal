@@ -4,8 +4,9 @@ A movie recommender with online serving, built in five days on MovieLens: baseli
 two-tower retriever trained with in-batch negatives, FAISS retrieval, a ranking stage, a Redis feature store for
 online features, and a FastAPI service (retrieve → rank → filter) with a latency benchmark and an A/B test simulator.
 
-**Status: day 1 of 5** (design, data pipeline, evaluation protocol, baselines). [DESIGN.md](DESIGN.md) is the
-specification for all five days. CI runs on every push (see "Day 1 notes").
+**Status: day 2 of 5** (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the two-tower retriever,
+chosen and reported by the same protocol, and what the split's time leak is worth to it). [DESIGN.md](DESIGN.md) is
+the specification for all five days. CI runs on every push (see "Day 1 notes").
 
 ## Architecture
 
@@ -33,7 +34,7 @@ flowchart LR
   end
 ```
 
-Built so far: everything on the offline side up to the evaluation of the baselines.
+Built so far: everything on the offline side except the FAISS index and the ranker (day 3).
 
 ## How to run
 
@@ -45,7 +46,13 @@ make check                                 # ruff, ruff format --check, mypy --s
 .venv/bin/signalrec baselines ml-1m        # results/ml-1m/baselines.json and a table
 .venv/bin/signalrec leakage ml-1m          # results/ml-1m/leakage.json
 .venv/bin/signalrec recommend ml-1m --user 1   # one user's recent likes and item-kNN's top 10, by title
+.venv/bin/signalrec twotower ml-1m         # results/ml-1m/twotower.json: tuned on validation, 3 seeds on test (~10 min)
+.venv/bin/signalrec leakage-twotower ml-1m # results/ml-1m/leakage-twotower.json (needs twotower.json first)
+.venv/bin/python scripts/recency_ablation.py ml-1m --out results/ml-1m/recency-ablation.json
 ```
+
+PyTorch runs on the CPU (`pip install torch` pulls in the right wheel on a Mac; on Linux, install the CPU-only wheel
+from `https://download.pytorch.org/whl/cpu` first, as CI does).
 
 For example, ml-1m user 1's last five likes are Disney and Pixar animation (The Hunchback of Notre Dame, Antz, A
 Bug's Life, Hercules, Mulan); item-kNN (k=3) puts Sleeping Beauty and Pinocchio in its top 10 next to broad favourites
@@ -167,6 +174,100 @@ slowly than item-kNN because of `top_k`'s stable sort (35.4 ms against 13.2 ms p
 item-kNN's scores are mostly equal zeros (74 distinct values in user 0's row against popularity's 682), which the
 sort runs through quickly. Neither matters at this size.
 
+## Results (day 2): the two-tower retriever
+
+Measured on 2026-11-08 (Apple M3, macOS 26.6, Python 3.11.12, PyTorch 2.15.0 on the CPU with 4 threads, NumPy
+2.4.6), on AC power, with a review agent running alongside, so the recorded seconds are not benchmarks.
+
+**ml-1m**, test, 6,034 users (`signalrec twotower ml-1m`, `results/ml-1m/twotower.json`; the baseline rows are the
+same models as day 1's, refit in the same run):
+
+| Model | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Coverage@10 |
+|---|---|---|---|---|---|
+| popularity | 0.0389 [0.0343, 0.0441] | 0.0193 [0.0166, 0.0221] | 0.1294 [0.1210, 0.1387] | 0.0385 [0.0355, 0.0417] | 0.037 |
+| item-kNN (k=3, shrink=10) | 0.0630 [0.0568, 0.0689] | 0.0314 [0.0280, 0.0349] | 0.1845 [0.1743, 0.1946] | 0.0581 [0.0544, 0.0618] | 0.213 |
+| two-tower (τ=0.1, logQ on, 17 epochs, seed 0) | 0.1361 [0.1279, 0.1448] | 0.0713 [0.0663, 0.0766] | 0.3533 [0.3421, 0.3651] | 0.1186 [0.1134, 0.1238] | 0.626 |
+
+Two-tower minus item-kNN (paired, test): NDCG@10 +0.0398 [0.0345, 0.0453], Recall@50 +0.1689 [0.1551, 0.1836].
+The rule DESIGN.md set before any training, a paired *validation* interval above zero, holds: +0.0414 [+0.0352,
++0.0469]. Seeds 0, 1 and 2 of the same configuration score NDCG@10 0.0713, 0.0706 and 0.0693 on test: the spread
+over seeds (0.002) is a twentieth of the gap to item-kNN.
+
+**ml-latest-small**, test, 601 users (`signalrec twotower ml-latest-small`): two-tower (τ=0.1, logQ on, 10 epochs)
+NDCG@10 0.0523 [0.0392, 0.0674] against item-kNN's 0.0360; paired +0.0163 [+0.0009, +0.0319], just above zero.
+Seeds give 0.0523, 0.0455 and 0.0526: on 601 users the seed spread is about half the gap.
+
+What the validation grid says (every configuration's learning curve and every candidate's paired interval are in the
+JSON):
+
+| ml-1m validation | τ=0.05 | τ=0.1 | τ=0.2 |
+|---|---|---|---|
+| logQ on: best NDCG@10 (epoch) | 0.0777 (5) | **0.0799 (17)** | 0.0717 (12) |
+| logQ off: best NDCG@10 (epoch) | 0.0440 (11) | 0.0496 (11) | 0.0436 (15) |
+| logQ on: coverage@10 at that epoch | 0.71 | 0.62 | 0.48 |
+| logQ off: coverage@10 at that epoch | 1.00 | 1.00 | 0.99 |
+
+- **logQ correction is most of the model.** Without it, every temperature loses about 0.03 NDCG@10 (40%), and the
+  top-10 lists cover the entire catalogue: in-batch negatives are popularity-weighted, so the uncorrected model learns
+  to push popular movies down, and recommends the long tail to everyone.
+- **The choice is firm in configuration and soft in epochs.** τ=0.05 with logQ is indistinguishable from the chosen
+  τ=0.1 (paired interval [-0.0025, +0.0072]); everything without logQ, and τ=0.2, is clearly worse. 27 of the other
+  119 (configuration, epoch) candidates are indistinguishable from the chosen one, all of them logQ-on at τ 0.05 or
+  0.1 from epoch 5 on: past epoch 5 the curve is flat within noise.
+
+### Where does the lead come from? (`python scripts/recency_ablation.py ml-1m`, `results/ml-1m/recency-ablation.json`)
+
+The user tower averages the last 50 positives; item-kNN sums over all of them. Post hoc, on validation only (the
+test items are never read), item-kNN was scored from each user's last *n* positives (similarities still from all the
+data) and the reported two-tower configuration was retrained with *n*-item histories (same τ, epochs and seed):
+
+| History | item-kNN NDCG@10 | two-tower NDCG@10 | two-tower Recall@50 |
+|---|---|---|---|
+| last 1 | 0.0411 | 0.1126 | 0.3941 |
+| last 5 | **0.0599** | **0.1233** | **0.4899** |
+| last 10 | 0.0554 | 0.1090 | 0.4652 |
+| last 20 | 0.0481 | 0.0889 | 0.4211 |
+| last 50 (two-tower as reported) | 0.0402 | 0.0799 | 0.3870 |
+| last 200 | 0.0386 | 0.0744 | 0.3742 |
+| all (item-kNN as reported) | 0.0386 | - | - |
+
+Recency is worth a lot to both: scoring item-kNN from the last 5 positives alone lifts it from 0.0386 to 0.0599
+(paired +0.0213 [+0.0171, +0.0255]), half of its gap to the reported two-tower model. But at *equal* history length
+the two-tower model still leads by about two to one (0.1233 against 0.0599 at five), so the lead is not only recency.
+And the reported model's 50-item history, a fixed setting from DESIGN.md, is far from the best: five items score
+0.1233 against 0.0799 on validation. It wasn't switched today, because this is one seed of a post-hoc look; day 3 makes
+the history length a grid dimension so the protocol chooses it. (724 of 6,034 users have more than 200 training
+positives, up to 1,415; the two-tower model wasn't run on whole histories because a batch of 1,024 such histories
+would gather hundreds of MB per step.)
+
+### What is the leak worth to the two-tower model? (`signalrec leakage-twotower <dataset>`)
+
+Day 1 found the split's calendar-time leak worth almost nothing to popularity. A learned model could use it more. A
+model can't be retrained per user, so users are cut into 10 buckets of about 603 by test time, and for each bucket the
+reported configuration (same τ, epochs, seed) is retrained on the training + validation positives before the bucket's
+earliest test time, then compared paired with the reported model on test (`results/<dataset>/leakage-twotower.json`).
+
+The first version of this check halved the model, and the reason was not the leak. The cut drops everything after
+it, including each bucket's own users' positives between the cut and their test item, which are their own past. Even
+the last bucket, trained on 97% of the examples, fell from 0.0335 to 0.0186. So each bucket also trains a second model
+that keeps its own users' training and validation positives whatever their time:
+
+| ml-1m, test NDCG@10 (6,034 users) | Value | Leaky minus it [95% CI] |
+|---|---|---|
+| reported model (trained on all training + validation) | 0.0713 | |
+| as of each bucket's cut, everything after it dropped | 0.0354 | +0.0359 [+0.0310, +0.0412] |
+| as of the cut, the bucket's own histories kept | 0.0712 | +0.0001 [-0.0048, +0.0054] |
+
+So on ml-1m the leak itself is worth nothing measurable to the two-tower model either; what the model needs is each
+user's *own* recent sequence in its training data. A check: the last bucket's own-histories model trains on exactly the
+reported model's 562,308 examples and scores exactly its 0.0335. Neither version is a strict bound (the second keeps a
+bucket-mate's positives later than a user's own test item, a small leak; both drop other buckets' positives between
+the cut and each test item; `leakage_twotower.py` says which way each errs), but they agree that the leak is small next
+to the user's own past. On **ml-latest-small** (601 users over 22 years, 60 per bucket) a gap remains even with own
+histories kept: NDCG@10 0.0523 against 0.0308, +0.0215 [+0.0094, +0.0356]. With so few users per bucket, an early
+bucket's model learns from very little, so that gap mixes the leak with plain data volume; this run can't separate
+them.
+
 ## Day 1 notes
 
 Facts about the real files that the strict parsers found (DESIGN.md said nothing about them before):
@@ -235,6 +336,40 @@ its own edge three times, and two claims of mine that measurement contradicted: 
 training positives, not the 70 I first wrote; caught before it was committed) and the reason popularity evaluates
 more slowly (the sort's work on varied scores, not ties; corrected in `f2c825f`).
 
+## Review of day 2
+
+Two review rounds, each one agent in its own worktree with a correctness brief, each finding a failing test (now
+passing) in `tests/review_d2/` and `tests/review_d2r2/`, plus a list of mutants that no test killed.
+
+**Round 1** (at `fd4b0f4`, about 9 minutes) found no leak, loss or selection bug, and 7 defects at the edges, fixed in
+`9899a33`: `--seeds` took 2^64, which `torch.manual_seed` refuses after the whole grid had trained; `--grid` took a
+repeated configuration; `run` didn't check the item-kNN grid (an empty one failed after all the training) or later
+seeds; a temperature of 1e-39 trained on NaN losses; DESIGN asked for every candidate's paired interval and only each
+configuration's best epoch had one; and DESIGN said every training positive is an example, which isn't true of each
+user's first (no history), so DESIGN changed. Its 14 surviving mutants mattered more: **a target leaking into its own
+training history**, the logQ flag inverted, the temperature or the accidental-hit mask ignored in training, genres
+ignored, the user tower reading the item table, scoring without each user's last positive. Every other test
+recomputed results through the same `train` and `embed`, so it couldn't see inside them. `tests/test_twotower_internals.py`
+now watches from outside (spies on what each batch feeds the loss; both towers recomputed by hand), and all 18 listed
+mutants fail a test (`01f22e2`; applied from a copy, restored, compared byte for byte).
+
+**Round 2** (at `01f22e2`, about 14 minutes) was asked what round 1's fixes broke, and reviewed the two pieces no round
+had seen (`leakage_twotower.py`, `scripts/recency_ablation.py`). 5 defects, fixed in `7faa1a9` and `b9d7045`:
+
+| Finding | Fix |
+|---|---|
+| Round 1's temperature bound (1/τ a finite float32) was too loose: 3e-39 is a denormal and still trained on NaN. | A floor, τ ≥ 1e-3, for `--grid` too. |
+| `temperature=True` and `lr=True` passed as 1.0, so a results file saying `"temperature": true` became a configuration. | Must be an int or float, not a bool. |
+| `ItemKNN` took `k=5.0`; `run` failed with a `TypeError` after the whole two-tower grid. | k and block must be integers. |
+| `leakage-twotower` filled fixed settings missing from the results file with today's defaults, and took a file produced from other prepared data. | Every fixed setting required; the file's params, counts and sources must equal the manifest's. |
+| The recency ablation's reference row was hard-coded as "last 50". | The reported length is always a row and the reference; `main()` tested. |
+
+Its most useful note was a hunch, which the code confirmed: the as-of model trained on other users' *test* positives
+before the cut, which the leaky model never sees, so "the as-of model knows less" wasn't true and the docstring's
+bound didn't hold. The as-of model now trains on training + validation positives before the cut only, a subset of the
+leaky model's data. 24 surviving mutants, including **the ablation reading the test items** (`main()` had no test);
+each now fails a test (`7faa1a9`, `b9d7045`). Findings per round: 7, then 5.
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are
@@ -249,11 +384,27 @@ more slowly (the sort's work on varied scores, not ties; corrected in `f2c825f`)
   file that changed.
 - **Pinned downloads and member-name extraction.** A swapped or truncated archive fails the hash; a hostile archive
   can't write outside its directory because only the expected member names are ever read.
+- **A user tower over the history, no user id** (day 2). Any history works, including one that changed a minute ago
+  or belongs to a user the model never saw; that is what lets day 3 serve fresh histories from Redis.
+- **In-batch negatives with logQ correction** (day 2). One matrix product per batch, no sampler; logQ undoes the
+  popularity bias that in-batch sampling adds (measured: worth +0.030 validation NDCG@10 at τ=0.1).
+- **Epochs chosen on validation, like every other choice** (day 2). Validation is scored after every epoch, so the
+  epoch count is one more hyperparameter with a paired interval, and the test run retrains for exactly that many.
+- **Evaluation through exported embeddings** (day 2). The towers become two NumPy matrices and go through the same
+  exact-rank code as the baselines, which is also what serving will use: no PyTorch on the request path.
 
-## Limitations (day 1)
+## Limitations
 
-- The per-user split's cross-user time leakage is measured (above), not removed. It is small for popularity; a
-  learned model could use it more, so day 2's two-tower model gets the same as-of check where it's affordable.
+- The per-user split's cross-user time leakage is measured, not removed: for popularity (day 1) and for the two-tower
+  model (day 2, "What is the leak worth to the two-tower model?" above).
+- The two-tower choice is the best of 120 validation candidates and item-kNN's the best of 30, on the same
+  validation users that are then used to compare them, so the validation comparison slightly favours the larger
+  search (review round 1 raised this). The test comparison is not affected: test is touched once per model.
+- In-batch negatives include the same user's other positives when two of their examples share a batch (only the same
+  *movie* is masked). That is the standard formulation and DESIGN's; it slightly penalises a user's own taste.
+- Nothing makes training identical across machines (float reductions can differ by CPU and thread count; not
+  measured, since only one machine was available), so CI runs the two-tower commands on real data without comparing
+  their numbers. On one machine a seed gives the same weights (a test).
 - Item-kNN's similarity is cosine on binary likes; no recency weighting, which the k results suggest would help.
 - ml-latest-small is too small to separate the baselines at NDCG@10; it is the CI dataset, not the results dataset.
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
@@ -270,13 +421,18 @@ src/signalrec/
   evaluate.py     exact ranks, Recall/NDCG/coverage, bootstrap intervals
   baselines.py    popularity, item-kNN
   experiment.py   the protocol: tune on validation, report on test
+  twotower.py     the two-tower model: sequences, histories, towers, loss, training, exported embeddings
+  experiment_twotower.py   the two-tower model by the same protocol
   leakage.py      the split's calendar-time leakage, measured
+  leakage_twotower.py      ... and what it is worth to the two-tower model
   recommend.py    one user's recommendations by title
   synthetic.py    a synthetic dataset for tests and CI
-  cli.py          signalrec download | synthetic | prepare | baselines | leakage | recommend
+  cli.py          signalrec download | synthetic | prepare | baselines | leakage | recommend | twotower |
+                  leakage-twotower
 scripts/compare_results.py   CI's check against the committed results
 scripts/bench_pipeline.py    stage timings and the similarity build's memory by block size
-results/<dataset>/{baselines,leakage}.json
+scripts/recency_ablation.py  validation-only: history length for item-kNN and the two-tower model
+results/<dataset>/{baselines,leakage,twotower,leakage-twotower}.json, results/ml-1m/recency-ablation.json
 ```
 
 ## License

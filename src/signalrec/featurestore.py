@@ -144,6 +144,10 @@ class FeatureStore:
 
     def user(self, user: int) -> UserFeatures:
         """One user's features (all zeros and empty for a user with no events)."""
+        # As for events: user(3.0) would read u:3.0, not user 3's keys (review round 2 of day 3).
+        if isinstance(user, bool) or not isinstance(user, int | np.integer) or user < 0:
+            raise ValueError(f"user must be an integer >= 0, got {user!r}")
+        user = int(user)
         recent_key, seen_key, genres_key, stats_key = self._user_keys(user)
         pipe = self.client.pipeline(transaction=True)  # one consistent snapshot: MULTI/EXEC
         pipe.lrange(recent_key, 0, -1)

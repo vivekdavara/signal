@@ -282,7 +282,9 @@ Both wheels bundle their own libomp, and the second one to start aborts the proc
 commit went in on that failing check, because I had piped `make check` into `tail` and the pipe's status was tail's;
 the next commit fixed it and says so. `retrieval.py` sets `KMP_DUPLICATE_LIB_OK=TRUE` on macOS before importing faiss;
 Intel calls it unsupported, so the tests run FAISS against a NumPy brute force after torch has trained in the same
-process, and serving (day 4) won't import torch at all.
+process. Later that day the retrieval benchmark segfaulted inside torch: it had imported faiss first, and only
+torch-first works (a batch search also hung). `retrieval.py` now imports torch before faiss, and
+`tests/test_openmp_order.py` runs both import orders in fresh interpreters.
 
 **What is in the feature store, and why those?**
 Per user: the last 50 positives (the user tower's input and the "last positive" ranker feature), every positive (the

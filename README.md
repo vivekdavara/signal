@@ -526,8 +526,10 @@ since the round before.
   (`scripts/same_second.py`). Reported as measured, with the untied numbers beside it; not fixed.
 - The feature store appends events in arrival order; offline lists are in event-time order. A late event online
   becomes the most recent one. The replay sorts, so the skew test can't see it.
-- On macOS, PyTorch and FAISS each bundle libomp and run side by side under `KMP_DUPLICATE_LIB_OK` (DESIGN.md, "As
-  built (day 3)"), which Intel calls unsupported; the tests check FAISS's answers in that setting.
+- On macOS, PyTorch and FAISS each bundle libomp and run side by side only with torch loaded first and under
+  `KMP_DUPLICATE_LIB_OK` (DESIGN.md, "As built (day 3)"), which Intel calls unsupported; faiss-first segfaults and a
+  batch search hung, so `retrieval.py` imports torch first and searches one query at a time. The tests check FAISS's
+  answers in that setting.
 - The ranker's gain on ml-1m (+0.0072 NDCG@10 on test) was not established on validation: its selection-users
   interval reached zero.
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),

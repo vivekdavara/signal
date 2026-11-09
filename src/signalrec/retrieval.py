@@ -28,18 +28,25 @@ Builds run on one thread, so the same vectors give the same index (HNSW's parall
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from dataclasses import dataclass
 from typing import Any
 
 if sys.platform == "darwin":
-    # PyTorch's and faiss-cpu's macOS wheels each bundle their own libomp. In a process that has used both (the tests,
-    # an experiment that trains and then retrieves), the second runtime to start aborts the process with OMP Error #15
-    # unless this is set. Intel documents it as an unsupported escape hatch; the tests run FAISS against a NumPy brute
-    # force in that same process, so a wrong answer would fail them. Serving imports no torch (DESIGN.md, "Day 4"),
-    # and Linux wheels use libgomp, which has no such check.
+    # PyTorch's and faiss-cpu's macOS wheels each bundle their own libomp, and they only coexist in one order
+    # (measured on day 3 with torch 2.15 and faiss-cpu 1.15.1, in .scratch/d3/order.py):
+    # - faiss loaded first: torch's first parallel region segfaults (exit 139), with or without the flag below;
+    # - torch first, without the flag: the second runtime aborts the process (OMP Error #15);
+    # - torch first, with KMP_DUPLICATE_LIB_OK=TRUE: one-query searches after training work (2,000 of them), but a
+    #   5-query batch search hung. Retriever only ever searches one query per call.
+    # So torch is imported here, before faiss, whenever it is installed: every process gets the order the tests run
+    # in, whichever module its caller imported first (scripts/bench_retrieval.py imported faiss first and crashed).
+    # Intel documents the flag as unsupported; the tests check FAISS against a NumPy brute force in that setting.
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    with contextlib.suppress(ImportError):  # no torch in this environment: only one runtime
+        import torch  # noqa: F401
 
 import faiss
 import numpy as np

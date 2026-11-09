@@ -1,0 +1,309 @@
+{
+  "command": "signalrec leakage-twotower ml-1m",
+  "dataset": "ml-1m",
+  "configuration from": "results/ml-1m/twotower.json",
+  "users": 6034,
+  "configuration": {
+    "dim": 64,
+    "hidden": 128,
+    "temperature": 0.1,
+    "logq": true,
+    "epochs": 17,
+    "batch_size": 1024,
+    "lr": 0.003,
+    "max_history": 50,
+    "seed": 0
+  },
+  "buckets": [
+    {
+      "bucket": 0,
+      "users": 604,
+      "cut (earliest test time)": "2000-04-26T01:26:28+00:00",
+      "latest test time": "2000-06-21T01:34:01+00:00",
+      "positives before the cut": 475,
+      "training examples": 468,
+      "trained": true,
+      "training examples, own histories kept": 43520,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.06314569103752704,
+        "as of the cut": 0.003914251869387515,
+        "as of the cut, own histories kept": 0.07648359521220814
+      },
+      "ndcg@50": {
+        "leaky": 0.11553947053229462,
+        "as of the cut": 0.007352631194366964,
+        "as of the cut, own histories kept": 0.11851569224196631
+      }
+    },
+    {
+      "bucket": 1,
+      "users": 604,
+      "cut (earliest test time)": "2000-06-21T02:06:03+00:00",
+      "latest test time": "2000-07-31T23:21:52+00:00",
+      "positives before the cut": 68498,
+      "training examples": 67674,
+      "trained": true,
+      "training examples, own histories kept": 107936,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.060440381314701204,
+        "as of the cut": 0.027770765298526366,
+        "as of the cut, own histories kept": 0.06682152445870114
+      },
+      "ndcg@50": {
+        "leaky": 0.10583740257086643,
+        "as of the cut": 0.05232633694238084,
+        "as of the cut, own histories kept": 0.1097316316253744
+      }
+    },
+    {
+      "bucket": 2,
+      "users": 604,
+      "cut (earliest test time)": "2000-07-31T23:54:04+00:00",
+      "latest test time": "2000-08-13T23:36:49+00:00",
+      "positives before the cut": 130888,
+      "training examples": 129299,
+      "trained": true,
+      "training examples, own histories kept": 172193,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.07701488678770764,
+        "as of the cut": 0.029083807685576793,
+        "as of the cut, own histories kept": 0.07585790554196101
+      },
+      "ndcg@50": {
+        "leaky": 0.13177495891395022,
+        "as of the cut": 0.054280347940841925,
+        "as of the cut, own histories kept": 0.1229938295001074
+      }
+    },
+    {
+      "bucket": 3,
+      "users": 604,
+      "cut (earliest test time)": "2000-08-14T00:04:07+00:00",
+      "latest test time": "2000-09-30T04:00:50+00:00",
+      "positives before the cut": 193873,
+      "training examples": 191569,
+      "trained": true,
+      "training examples, own histories kept": 229664,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.06619788190378051,
+        "as of the cut": 0.042615379726084986,
+        "as of the cut, own histories kept": 0.0713912849968606
+      },
+      "ndcg@50": {
+        "leaky": 0.11351212913310195,
+        "as of the cut": 0.07344349102171364,
+        "as of the cut, own histories kept": 0.12237633452449727
+      }
+    },
+    {
+      "bucket": 4,
+      "users": 603,
+      "cut (earliest test time)": "2000-09-30T23:12:58+00:00",
+      "latest test time": "2000-11-17T18:05:40+00:00",
+      "positives before the cut": 263558,
+      "training examples": 260554,
+      "trained": true,
+      "training examples, own histories kept": 293644,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.09546661417798287,
+        "as of the cut": 0.04855721331290308,
+        "as of the cut, own histories kept": 0.07886863267299121
+      },
+      "ndcg@50": {
+        "leaky": 0.14484610785654287,
+        "as of the cut": 0.07949570774068336,
+        "as of the cut, own histories kept": 0.12854971491202244
+      }
+    },
+    {
+      "bucket": 5,
+      "users": 603,
+      "cut (earliest test time)": "2000-11-17T19:21:46+00:00",
+      "latest test time": "2000-11-21T00:53:39+00:00",
+      "positives before the cut": 320428,
+      "training examples": 316704,
+      "trained": true,
+      "training examples, own histories kept": 351113,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.09456861190159448,
+        "as of the cut": 0.0492754444710188,
+        "as of the cut, own histories kept": 0.08494077701532292
+      },
+      "ndcg@50": {
+        "leaky": 0.14967038320603857,
+        "as of the cut": 0.0862698326174044,
+        "as of the cut, own histories kept": 0.14603982358976444
+      }
+    },
+    {
+      "bucket": 6,
+      "users": 603,
+      "cut (earliest test time)": "2000-11-21T00:59:48+00:00",
+      "latest test time": "2000-11-30T17:37:46+00:00",
+      "positives before the cut": 382198,
+      "training examples": 377542,
+      "trained": true,
+      "training examples, own histories kept": 414422,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.0834218370857477,
+        "as of the cut": 0.04820528840802955,
+        "as of the cut, own histories kept": 0.08884217838582475
+      },
+      "ndcg@50": {
+        "leaky": 0.14145083905332625,
+        "as of the cut": 0.07983146382006744,
+        "as of the cut, own histories kept": 0.13123658739349275
+      }
+    },
+    {
+      "bucket": 7,
+      "users": 603,
+      "cut (earliest test time)": "2000-11-30T18:22:09+00:00",
+      "latest test time": "2000-12-28T04:57:07+00:00",
+      "positives before the cut": 452228,
+      "training examples": 446879,
+      "trained": true,
+      "training examples, own histories kept": 481461,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.08461665219518467,
+        "as of the cut": 0.06261158919257773,
+        "as of the cut, own histories kept": 0.0840128686108743
+      },
+      "ndcg@50": {
+        "leaky": 0.13368045631167944,
+        "as of the cut": 0.0984978123047054,
+        "as of the cut, own histories kept": 0.13587637333404493
+      }
+    },
+    {
+      "bucket": 8,
+      "users": 603,
+      "cut (earliest test time)": "2000-12-28T08:08:08+00:00",
+      "latest test time": "2001-11-15T07:57:08+00:00",
+      "positives before the cut": 513436,
+      "training examples": 507454,
+      "trained": true,
+      "training examples, own histories kept": 524051,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.05432456608882557,
+        "as of the cut": 0.023386675895075634,
+        "as of the cut, own histories kept": 0.05110060046871609
+      },
+      "ndcg@50": {
+        "leaky": 0.08923128935918459,
+        "as of the cut": 0.04881964213928967,
+        "as of the cut, own histories kept": 0.0844222120639064
+      }
+    },
+    {
+      "bucket": 9,
+      "users": 603,
+      "cut (earliest test time)": "2001-11-15T20:56:30+00:00",
+      "latest test time": "2003-02-28T17:49:50+00:00",
+      "positives before the cut": 551728,
+      "training examples": 545699,
+      "trained": true,
+      "training examples, own histories kept": 562308,
+      "trained, own histories kept": true,
+      "ndcg@10": {
+        "leaky": 0.0335441473957297,
+        "as of the cut": 0.01864796533499987,
+        "as of the cut, own histories kept": 0.0335441473957297
+      },
+      "ndcg@50": {
+        "leaky": 0.060183140364183554,
+        "as of the cut": 0.0386281442963837,
+        "as of the cut, own histories kept": 0.060183140364183554
+      }
+    }
+  ],
+  "two-tower, leaky minus as of the cut (paired)": {
+    "recall@10": {
+      "trained on all training + validation (leaky)": 0.1360623135565131,
+      "trained as of the bucket's cut": 0.07109711634073583,
+      "difference": 0.06496519721577727,
+      "difference ci95": [
+        0.056347364932051704,
+        0.07391862777593636
+      ]
+    },
+    "ndcg@10": {
+      "trained on all training + validation (leaky)": 0.07127109456148141,
+      "trained as of the bucket's cut": 0.03540050017644519,
+      "difference": 0.03587059438503622,
+      "difference ci95": [
+        0.030955867767306328,
+        0.04115937010336248
+      ]
+    },
+    "recall@50": {
+      "trained on all training + validation (leaky)": 0.35333112363274777,
+      "trained as of the bucket's cut": 0.19489559164733178,
+      "difference": 0.158435531985416,
+      "difference ci95": [
+        0.14699618826648989,
+        0.1708650977792509
+      ]
+    },
+    "ndcg@50": {
+      "trained on all training + validation (leaky)": 0.11857135380738396,
+      "trained as of the bucket's cut": 0.06188456828767902,
+      "difference": 0.056686785519704935,
+      "difference ci95": [
+        0.05192687721739654,
+        0.06142400045308741
+      ]
+    }
+  },
+  "two-tower, leaky minus as of the cut with the bucket's own histories kept (paired)": {
+    "recall@10": {
+      "trained on all training + validation (leaky)": 0.1360623135565131,
+      "trained as of the bucket's cut, plus the bucket's own histories": 0.13871395425919789,
+      "difference": -0.002651640702684782,
+      "difference ci95": [
+        -0.01143520053032814,
+        0.006467517401392107
+      ]
+    },
+    "ndcg@10": {
+      "trained on all training + validation (leaky)": 0.07127109456148141,
+      "trained as of the bucket's cut, plus the bucket's own histories": 0.07118731417136248,
+      "difference": 8.37803901189288e-05,
+      "difference ci95": [
+        -0.004775223630038554,
+        0.005364973024661609
+      ]
+    },
+    "recall@50": {
+      "trained on all training + validation (leaky)": 0.35333112363274777,
+      "trained as of the bucket's cut, plus the bucket's own histories": 0.3462048392442824,
+      "difference": 0.007126284388465354,
+      "difference ci95": [
+        -0.003488564799469664,
+        0.017736990387802447
+      ]
+    },
+    "ndcg@50": {
+      "trained on all training + validation (leaky)": 0.11857135380738396,
+      "trained as of the bucket's cut, plus the bucket's own histories": 0.11599413278690024,
+      "difference": 0.0025772210204837165,
+      "difference ci95": [
+        -0.0020200487693219755,
+        0.007310884435798001
+      ]
+    }
+  },
+  "bootstrap": {
+    "resamples": 1000,
+    "seed": 20261107
+  }
+}

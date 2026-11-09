@@ -1,0 +1,48 @@
+{
+  "command": "python scripts/bench_featurestore.py ml-1m --out results/ml-1m/featurestore.json",
+  "dataset": "ml-1m",
+  "events": 568342,
+  "users": 6034,
+  "items": 3125,
+  "replay": {
+    "batch": 1000,
+    "runs": [
+      {
+        "seconds": 8.522056167013943,
+        "events per second": 66690.7127648212
+      },
+      {
+        "seconds": 8.466578416060656,
+        "events per second": 67127.70756624482
+      },
+      {
+        "seconds": 8.497801249963231,
+        "events per second": 66881.06526408336
+      }
+    ],
+    "best events per second": 67127.70756624482
+  },
+  "read one user (FeatureStore.user)": {
+    "p50_us": 275.58300644159317,
+    "p95_us": 484.1660847887397,
+    "p99_us": 658.6250383406878,
+    "mean_us": 298.84138190316236
+  },
+  "read popularity (FeatureStore.popularity, 50 calls)": {
+    "p50_us": 4795.499960891902,
+    "p95_us": 4859.54200848937,
+    "p99_us": 4961.667000316083,
+    "mean_us": 4798.900913447142
+  },
+  "users whose online features differ from offline": 0,
+  "movies whose online popularity differs from offline": 0,
+  "load_1m": 2.8388671875,
+  "slept_s": 0.0,
+  "environment": {
+    "python": "3.11.12",
+    "redis-py": "8.1.0",
+    "redis server": "8.8.0",
+    "machine": "arm64",
+    "system": "Darwin"
+  }
+}

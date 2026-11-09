@@ -210,8 +210,8 @@ def test_a_bad_event_is_refused_before_redis(store: FeatureStore, catalogue: fe.
 @pytest.mark.parametrize(
     ("key", "setup", "message"),
     [
-        ("u:2:stats", lambda c, k: c.hset(k, "positives", "seven"), "not an integer"),
-        ("u:2:stats", lambda c, k: c.hset(k, "positives", " 7"), "not an integer"),
+        ("u:2:stats", lambda c, k: c.hset(k, "positives", "seven"), "non-negative integer"),
+        ("u:2:stats", lambda c, k: c.hset(k, "positives", " 7"), "non-negative integer"),
         ("u:2:stats", lambda c, k: c.hset(k, "clicks", "1"), "unexpected stats fields"),
         ("u:2:genres", lambda c, k: c.hset(k, "999", "1"), "outside the"),
         ("u:2:recent", lambda c, k: c.rpush(k, "100000"), "outside the catalogue"),
@@ -226,7 +226,7 @@ def test_garbage_in_redis_is_an_error_not_a_feature(store: FeatureStore, key: st
 
 def test_garbage_popularity_is_an_error(store: FeatureStore) -> None:
     store.client.hset(f"{store.namespace}:popularity", "0", "1.5")
-    with pytest.raises(FeatureStoreError, match="not an integer"):
+    with pytest.raises(FeatureStoreError, match="non-negative integer"):
         store.popularity()
     store.client.delete(f"{store.namespace}:popularity")
     store.client.set(f"{store.namespace}:popularity", "x")

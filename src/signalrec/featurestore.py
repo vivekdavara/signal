@@ -19,6 +19,7 @@ limitation the README states.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -31,6 +32,10 @@ from signalrec.features import NO_YEAR, RECENT, Catalogue, Event, IntArray, User
 
 DEFAULT_URL = "redis://127.0.0.1:6383/0"
 DEFAULT_NAMESPACE = "signal"
+# Letters, digits, '-' and '_' only: ':' separates key parts, and SCAN's glob characters (* ? [ ] \) in a namespace
+# made clear() delete other namespaces' keys (review of day 3).
+_NAMESPACE = re.compile(r"[A-Za-z0-9_-]+")
+INT64_MAX = 2**63 - 1
 
 # KEYS: recent, seen, genres, stats, popularity. ARGV: movie, recent cap, year (or -1), genre indices...
 _RECORD = """
@@ -67,8 +72,8 @@ class FeatureStore:
     def __init__(
         self, client: redis.Redis, catalogue: Catalogue, namespace: str = DEFAULT_NAMESPACE, recent: int = RECENT
     ) -> None:
-        if not namespace or ":" in namespace:
-            raise ValueError(f"namespace must be non-empty without ':', got {namespace!r}")
+        if not isinstance(namespace, str) or not _NAMESPACE.fullmatch(namespace):
+            raise ValueError(f"namespace must be letters, digits, '-' or '_', got {namespace!r}")
         if type(recent) is not int or recent < 1:
             raise ValueError(f"recent must be an integer >= 1, got {recent!r}")
         self.client = client
@@ -90,14 +95,20 @@ class FeatureStore:
         return f"{self.namespace}:popularity"
 
     def _args(self, event: Event) -> tuple[list[str], list[int]]:
+        # Integers only: a user of 3.0 or True would be written under u:3.0 or u:True, keys user(3) never reads
+        # (review of day 3). NumPy integers are fine; bools are not.
+        for name in ("user", "movie"):
+            value = getattr(event, name)
+            if isinstance(value, bool) or not isinstance(value, int | np.integer):
+                raise ValueError(f"event {name} must be an integer, got {value!r}")
         if not 0 <= event.movie < self.catalogue.n_items:
             raise ValueError(f"movie {event.movie} is outside the catalogue of {self.catalogue.n_items}")
         if event.user < 0:
             raise ValueError(f"user {event.user} is negative")
         year = int(self.catalogue.years[event.movie])
-        keys = [*self._user_keys(event.user), self._popularity_key]
+        keys = [*self._user_keys(int(event.user)), self._popularity_key]
         return keys, [
-            event.movie,
+            int(event.movie),
             self.recent,
             year if year != NO_YEAR else -1,
             *self.catalogue.movie_genres[event.movie],
@@ -190,10 +201,15 @@ class FeatureStore:
     @staticmethod
     def _int(raw: Any, what: str) -> int:
         text = FeatureStore._text(raw)
-        # int() accepts " 7", "+7" and "7_0"; Redis's HINCRBY writes none of them.
-        if not (text.isascii() and (text.isdigit() or (text.startswith("-") and text[1:].isdigit()))):
-            raise FeatureStoreError(f"{what} is {text!r}, not an integer")
-        return int(text)
+        # int() accepts " 7", "+7" and "7_0"; Redis's HINCRBY writes none of them. Every value the store writes is a
+        # count, a sum of years or an index: never negative, and within HINCRBY's int64 (review of day 3: -1 and 2^70
+        # were returned as features, or raised OverflowError).
+        if not (text.isascii() and text.isdigit()):
+            raise FeatureStoreError(f"{what} is {text!r}, not a non-negative integer")
+        value = int(text)
+        if value > INT64_MAX:
+            raise FeatureStoreError(f"{what} is {text!r}, beyond what Redis can hold")
+        return value
 
     def _movie(self, raw: Any, user: int | None) -> int:
         movie = self._int(raw, "a movie index")

@@ -98,9 +98,11 @@ def test_the_reference_is_the_reported_history_length(tmp_path: Path) -> None:
     assert cli.main(["prepare", "synthetic", "--data-dir", str(tmp_path)]) == 0
     source = tmp_path / "twotower.json"
     args = ["twotower", "synthetic", "--data-dir", str(tmp_path), "--grid", "0.1:on", "--epochs", "1", "--seeds", "0"]
-    assert cli.main([*args, "--knn-grid", "5:0", "--quiet", "--out", str(source)]) == 0
+    assert cli.main([*args, "--histories", "3", "--knn-grid", "5:0", "--quiet", "--out", str(source)]) == 0
     result = json.loads(source.read_text())
-    result["fixed"]["max_history"] = 7
+    # From day 3 the history length is chosen on validation, so the results file has it under "chosen".
+    assert result["chosen"]["two-tower"]["max_history"] == 3
+    result["chosen"]["two-tower"]["max_history"] = 7
     source.write_text(json.dumps(result))
     out = tmp_path / "recency.json"
     argv = ["synthetic", "--data-dir", str(tmp_path), "--from", str(source), "--out", str(out)]

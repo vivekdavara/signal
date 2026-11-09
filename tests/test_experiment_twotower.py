@@ -18,6 +18,8 @@ from signalrec.baselines import ItemKNN, Popularity
 from signalrec.prepare import Prepared
 
 GRID = ((0.1, True), (0.5, False))
+HISTORIES = (2, 5)
+CONFIGS = ext.configurations(GRID, HISTORIES)  # (temperature, logq, max_history), pairs outer
 KNN_GRID = ((5, 0.0), (20, 0.0))
 BASE = tt.Config(dim=16, hidden=16, batch_size=64, lr=1e-2)
 EPOCHS = 4
@@ -32,7 +34,19 @@ def prepared(tmp_path_factory: pytest.TempPathFactory) -> Prepared:
 
 @pytest.fixture(scope="module")
 def result(prepared: Prepared) -> dict[str, Any]:
-    return ext.run(prepared, GRID, EPOCHS, SEEDS, KNN_GRID, BASE)
+    return ext.run(prepared, GRID, EPOCHS, SEEDS, KNN_GRID, BASE, histories=HISTORIES)
+
+
+def _chosen_config(result: dict[str, Any]) -> tt.Config:
+    chosen = result["chosen"]["two-tower"]
+    return replace(
+        BASE,
+        temperature=chosen["temperature"],
+        logq=chosen["logq"],
+        max_history=chosen["max_history"],
+        epochs=chosen["epochs"],
+        seed=SEEDS[0],
+    )
 
 
 def _val_ndcg(p: Prepared, config: tt.Config) -> ev.FloatArray:
@@ -45,11 +59,19 @@ def _val_ndcg(p: Prepared, config: tt.Config) -> ev.FloatArray:
 
 def test_the_choice_is_the_best_epoch_of_the_best_configuration(result: dict[str, Any]) -> None:
     rows = result["validation"]["two-tower"]
-    assert [(r["temperature"], r["logq"]) for r in rows] == list(GRID)
-    candidates = [(r["temperature"], r["logq"], c["epoch"], c["ndcg@10"]) for r in rows for c in r["curve"]]
-    assert len(candidates) == len(GRID) * EPOCHS
-    best = max(candidates, key=lambda c: c[3])  # max keeps the first of equal values: earlier config, then epoch
-    assert result["chosen"]["two-tower"] == {"temperature": best[0], "logq": best[1], "epochs": best[2]}
+    assert [(r["temperature"], r["logq"], r["max_history"]) for r in rows] == CONFIGS
+    assert CONFIGS == [(0.1, True, 2), (0.1, True, 5), (0.5, False, 2), (0.5, False, 5)]
+    candidates = [
+        (r["temperature"], r["logq"], r["max_history"], c["epoch"], c["ndcg@10"]) for r in rows for c in r["curve"]
+    ]
+    assert len(candidates) == len(CONFIGS) * EPOCHS
+    best = max(candidates, key=lambda c: c[4])  # max keeps the first of equal values: earlier config, then epoch
+    assert result["chosen"]["two-tower"] == {
+        "temperature": best[0],
+        "logq": best[1],
+        "max_history": best[2],
+        "epochs": best[3],
+    }
     for row in rows:
         top = max(row["curve"], key=lambda c: c["ndcg@10"])
         assert row["best epoch"] == top["epoch"]
@@ -59,19 +81,30 @@ def test_the_choice_is_the_best_epoch_of_the_best_configuration(result: dict[str
 def test_the_curve_scores_validation_with_training_history_only(prepared: Prepared, result: dict[str, Any]) -> None:
     # Retrained independently for each epoch count: the curve's value at epoch e is a model trained e epochs on the
     # training positives and scored on the validation items (not the test items, not with validation in the history).
-    row = result["validation"]["two-tower"][0]
-    temperature, logq = GRID[0]
-    for point in (row["curve"][0], row["curve"][-1]):
-        config = replace(BASE, temperature=temperature, logq=logq, epochs=point["epoch"], seed=SEEDS[0])
-        assert float(_val_ndcg(prepared, config).mean()) == point["ndcg@10"]
+    # Every configuration's row, so a history length that isn't passed to training or to scoring is caught.
+    for row, (temperature, logq, max_history) in zip(result["validation"]["two-tower"], CONFIGS, strict=True):
+        for point in (row["curve"][0], row["curve"][-1]):
+            config = replace(
+                BASE,
+                temperature=temperature,
+                logq=logq,
+                max_history=max_history,
+                epochs=point["epoch"],
+                seed=SEEDS[0],
+            )
+            assert float(_val_ndcg(prepared, config).mean()) == point["ndcg@10"]
+
+
+def test_the_history_length_changes_the_model(result: dict[str, Any]) -> None:
+    # Two lengths with the same (temperature, logq) must give different curves, or the dimension does nothing.
+    rows = result["validation"]["two-tower"]
+    assert rows[0]["curve"][-1]["ndcg@10"] != rows[1]["curve"][-1]["ndcg@10"]
+    assert result["grid"] == {"temperature, logq": [list(pair) for pair in GRID], "max_history": list(HISTORIES)}
+    assert "max_history" not in result["fixed"]
 
 
 def test_the_comparison_with_item_knn_is_paired_on_validation(prepared: Prepared, result: dict[str, Any]) -> None:
-    chosen = result["chosen"]["two-tower"]
-    config = replace(
-        BASE, temperature=chosen["temperature"], logq=chosen["logq"], epochs=chosen["epochs"], seed=SEEDS[0]
-    )
-    two_tower = _val_ndcg(prepared, config)
+    two_tower = _val_ndcg(prepared, _chosen_config(result))
     tuning = experiment.tune_item_knn(prepared, KNN_GRID)
     knn = tuning.per_user[tuning.chosen]
     cell = result["two-tower minus item-knn, validation ndcg@10 (paired)"]
@@ -84,11 +117,18 @@ def test_the_comparison_with_item_knn_is_paired_on_validation(prepared: Prepared
 def test_each_configurations_interval_is_chosen_minus_it(prepared: Prepared, result: dict[str, Any]) -> None:
     rows = result["validation"]["two-tower"]
     per_user = []
-    for row, (temperature, logq) in zip(rows, GRID, strict=True):
-        config = replace(BASE, temperature=temperature, logq=logq, epochs=row["best epoch"], seed=SEEDS[0])
+    for row, (temperature, logq, max_history) in zip(rows, CONFIGS, strict=True):
+        config = replace(
+            BASE,
+            temperature=temperature,
+            logq=logq,
+            max_history=max_history,
+            epochs=row["best epoch"],
+            seed=SEEDS[0],
+        )
         per_user.append(_val_ndcg(prepared, config))
     chosen = result["chosen"]["two-tower"]
-    index = GRID.index((chosen["temperature"], chosen["logq"]))
+    index = CONFIGS.index((chosen["temperature"], chosen["logq"], chosen["max_history"]))
     assert len({r["best"]["ndcg@10"] for r in rows}) > 1  # otherwise a mirrored interval could equal the right one
     for row, values in zip(rows, per_user, strict=True):
         assert tuple(row[ext.DIAGNOSTIC]) == ev.paired_bootstrap_ci(per_user[index], values, seed=experiment.SEED)
@@ -96,7 +136,7 @@ def test_each_configurations_interval_is_chosen_minus_it(prepared: Prepared, res
         "validation configurations indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)"
     ]
     want = [
-        {"temperature": r["temperature"], "logq": r["logq"]}
+        {"temperature": r["temperature"], "logq": r["logq"], "max_history": r["max_history"]}
         for i, r in enumerate(rows)
         if i != index and r[ext.DIAGNOSTIC][0] <= 0
     ]
@@ -104,10 +144,7 @@ def test_each_configurations_interval_is_chosen_minus_it(prepared: Prepared, res
 
 
 def test_the_test_run_retrains_on_training_plus_validation(prepared: Prepared, result: dict[str, Any]) -> None:
-    chosen = result["chosen"]["two-tower"]
-    config = replace(
-        BASE, temperature=chosen["temperature"], logq=chosen["logq"], epochs=chosen["epochs"], seed=SEEDS[0]
-    )
+    config = _chosen_config(result)
     seq = tt.sequences(prepared, include_val=True)
     net, _ = tt.train(seq, tt.genre_matrix(prepared.genres)[0], config)
     history = prepared.history(include_val=True)
@@ -143,7 +180,7 @@ def test_the_baselines_are_refit_on_training_plus_validation(prepared: Prepared,
 
 
 def test_runs_are_reproducible(prepared: Prepared, result: dict[str, Any]) -> None:
-    again = ext.run(prepared, GRID, EPOCHS, SEEDS, KNN_GRID, BASE)
+    again = ext.run(prepared, GRID, EPOCHS, SEEDS, KNN_GRID, BASE, histories=HISTORIES)
 
     def strip(r: dict[str, Any]) -> str:
         r = json.loads(json.dumps(r))
@@ -159,9 +196,11 @@ def test_runs_are_reproducible(prepared: Prepared, result: dict[str, Any]) -> No
 
 def test_an_empty_grid_or_no_seeds_is_refused(prepared: Prepared) -> None:
     with pytest.raises(ValueError, match="grid"):
-        ext.run(prepared, (), EPOCHS, SEEDS, KNN_GRID, BASE)
+        ext.run(prepared, (), EPOCHS, SEEDS, KNN_GRID, BASE, histories=HISTORIES)
     with pytest.raises(ValueError, match="seeds"):
-        ext.run(prepared, GRID, EPOCHS, (), KNN_GRID, BASE)
+        ext.run(prepared, GRID, EPOCHS, (), KNN_GRID, BASE, histories=HISTORIES)
+    with pytest.raises(ValueError, match="no history lengths"):
+        ext.run(prepared, GRID, EPOCHS, SEEDS, KNN_GRID, BASE, histories=())
 
 
 def test_the_twotower_command_writes_json_and_a_table(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -175,6 +214,8 @@ def test_the_twotower_command_writes_json_and_a_table(tmp_path: Path, capsys: py
         str(tmp_path),
         "--grid",
         "0.1:on",
+        "--histories",
+        "3,4",
         "--epochs",
         "2",
         "--seeds",
@@ -186,9 +227,10 @@ def test_the_twotower_command_writes_json_and_a_table(tmp_path: Path, capsys: py
     ]
     assert cli.main(args) == 0
     captured = capsys.readouterr()
-    assert "| two-tower (τ=0.1, logQ on, " in captured.out
+    assert "| two-tower (τ=0.1, logQ on, history " in captured.out
     assert "epoch 2" in captured.err  # progress goes to stderr
     result = json.loads(out.read_text())
+    assert [row["max_history"] for row in result["validation"]["two-tower"]] == [3, 4]
     assert result["command"] == "signalrec " + " ".join(args)
     assert result["environment"]["torch"]
 
@@ -207,6 +249,10 @@ def test_the_twotower_command_writes_json_and_a_table(tmp_path: Path, capsys: py
         ["--epochs", "0"],
         ["--grid", "0.0001:on"],  # below twotower.MIN_TEMPERATURE (review round 2)
         ["--seeds", str(2**64)],
+        ["--histories", "0"],
+        ["--histories", "5,5"],
+        ["--histories", "5,"],
+        ["--histories", "2.5"],
     ],
 )
 def test_bad_twotower_flags_are_usage_errors(flags: list[str], capsys: pytest.CaptureFixture[str]) -> None:
@@ -240,26 +286,31 @@ def test_ties_go_to_the_earlier_configuration_then_epoch(prepared: Prepared, mon
         )
 
     monkeypatch.setattr(ev, "evaluate", same_ranks)
-    tied = ext.run(prepared, GRID, 3, (0,), KNN_GRID, BASE)
-    assert tied["chosen"]["two-tower"] == {"temperature": GRID[0][0], "logq": GRID[0][1], "epochs": 1}
-    assert [row["best epoch"] for row in tied["validation"]["two-tower"]] == [1, 1]
+    tied = ext.run(prepared, GRID, 3, (0,), KNN_GRID, BASE, histories=HISTORIES)
+    first = CONFIGS[0]
+    assert tied["chosen"]["two-tower"] == {
+        "temperature": first[0],
+        "logq": first[1],
+        "max_history": first[2],
+        "epochs": 1,
+    }
+    assert [row["best epoch"] for row in tied["validation"]["two-tower"]] == [1] * len(CONFIGS)
     reaches = "indistinguishable from the chosen one (paired ndcg@10 interval reaches 0)"
     configs = tied[f"validation configurations {reaches}"]
-    assert configs == [{"temperature": GRID[1][0], "logq": GRID[1][1]}]
+    assert configs == [{"temperature": t, "logq": q, "max_history": h} for t, q, h in CONFIGS[1:]]
     candidates = tied[f"validation candidates {reaches}"]
-    assert candidates["of"] == candidates["count"] == 2 * 3 - 1
+    assert candidates["of"] == candidates["count"] == len(CONFIGS) * 3 - 1
 
 
 def test_a_non_best_epochs_interval_is_chosen_minus_it(prepared: Prepared, result: dict[str, Any]) -> None:
     # Review round 2: swapping the per-candidate interval's arguments, or its ends, survived (only the all-tied case
     # checked it). Recomputed for the second configuration's first epoch.
-    chosen = result["chosen"]["two-tower"]
-    best = _val_ndcg(
+    best = _val_ndcg(prepared, _chosen_config(result))
+    temperature, logq, max_history = CONFIGS[1]
+    other = _val_ndcg(
         prepared,
-        replace(BASE, temperature=chosen["temperature"], logq=chosen["logq"], epochs=chosen["epochs"], seed=SEEDS[0]),
+        replace(BASE, temperature=temperature, logq=logq, max_history=max_history, epochs=1, seed=SEEDS[0]),
     )
-    temperature, logq = GRID[1]
-    other = _val_ndcg(prepared, replace(BASE, temperature=temperature, logq=logq, epochs=1, seed=SEEDS[0]))
     point = result["validation"]["two-tower"][1]["curve"][0]
     want = ev.paired_bootstrap_ci(best, other, seed=experiment.SEED)
     assert want[0] != -want[1]  # a mirrored interval would differ
@@ -267,19 +318,22 @@ def test_a_non_best_epochs_interval_is_chosen_minus_it(prepared: Prepared, resul
 
 
 @pytest.mark.parametrize(
-    ("grid", "seeds", "message"),
+    ("grid", "seeds", "histories", "message"),
     [
-        (((0.1, True), (0.1, True)), (0,), "repeats a configuration"),
-        (((0.1, True),), (1, 1), "seeds repeat"),
-        (((0.1, True),), (0, 2**64), "seed"),
+        (((0.1, True), (0.1, True)), (0,), (5,), "repeats a configuration"),
+        (((0.1, True),), (1, 1), (5,), "seeds repeat"),
+        (((0.1, True),), (0, 2**64), (5,), "seed"),
+        (((0.1, True),), (0,), (5, 5), "history lengths repeat"),
+        (((0.1, True),), (0,), (5, 0), "max_history"),
+        (((0.1, True),), (0,), (5, True), "max_history"),
     ],
 )
 def test_run_refuses_repeats_and_bad_seeds_before_training(
-    prepared: Prepared, monkeypatch: pytest.MonkeyPatch, grid: Any, seeds: Any, message: str
+    prepared: Prepared, monkeypatch: pytest.MonkeyPatch, grid: Any, seeds: Any, histories: Any, message: str
 ) -> None:
     def no_training(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("trained before refusing")
 
     monkeypatch.setattr(tt, "train", no_training)
     with pytest.raises(ValueError, match=message):
-        ext.run(prepared, grid, 2, seeds, KNN_GRID, BASE)
+        ext.run(prepared, grid, 2, seeds, KNN_GRID, BASE, histories=histories)

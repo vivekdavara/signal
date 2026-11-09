@@ -1,9 +1,12 @@
 """The two-tower model by the same protocol as the baselines (DESIGN.md, "Day 2: two-tower retriever").
 
-1. **Validation.** Each grid configuration (temperature, logQ on or off) trains on the training positives; after every
-   epoch its exported embeddings rank every user's validation item. The candidates are (configuration, epoch) pairs and
-   the choice is the highest validation NDCG@10 (ties to the earlier configuration, then the earlier epoch). Every
-   configuration's best epoch gets the paired interval of (chosen - it) NDCG@10, as item-kNN's grid rows do.
+1. **Validation.** Each grid configuration (temperature, logQ on or off, history length) trains on the training
+   positives; after every epoch its exported embeddings rank every user's validation item. The configurations are the
+   (temperature, logQ) pairs crossed with the history lengths, in that order (pairs outer). The candidates are
+   (configuration, epoch) pairs and the choice is the highest validation NDCG@10 (ties to the earlier configuration,
+   then the earlier epoch). Every configuration's best epoch gets the paired interval of (chosen - it) NDCG@10, as
+   item-kNN's grid rows do. The history length became a grid dimension on day 3 (DESIGN.md, "Day 3"): day 2 fixed it
+   at 50 and a post-hoc ablation found 5 far better on validation.
 2. **Against item-kNN on validation.** Item-kNN is tuned on its own grid; "the two-tower model beats item-kNN" means the
    paired validation interval of (two-tower - item-kNN) NDCG@10 lies above zero, not just a higher mean.
 3. **Test.** The chosen configuration is retrained on training + validation for the chosen number of epochs with each
@@ -33,8 +36,12 @@ PRIMARY = experiment.PRIMARY
 PRIMARY_K = experiment.PRIMARY_K
 SEED = experiment.SEED
 DIAGNOSTIC = experiment.DIAGNOSTIC
-# (temperature, logQ correction on?) pairs.
-DEFAULT_GRID: tuple[tuple[float, bool], ...] = tuple((t, q) for t in (0.05, 0.1, 0.2) for q in (True, False))
+# (temperature, logQ correction on?) pairs. Day 2's grid crossed each temperature with logQ on and off; every logQ-off
+# configuration lost about 0.03 validation NDCG@10 with an interval excluding zero, so from day 3 the default keeps logQ
+# on (a validation result, carried forward) and spends the time on the history length instead.
+DEFAULT_GRID: tuple[tuple[float, bool], ...] = tuple((t, True) for t in (0.05, 0.1, 0.2))
+# Each user's most recent n positives feed the user tower.
+DEFAULT_HISTORIES: tuple[int, ...] = (1, 3, 5, 10, 20, 50)
 DEFAULT_EPOCHS = 20
 DEFAULT_SEEDS = (0, 1, 2)
 DEFAULT_BASE = tt.Config()
@@ -55,7 +62,7 @@ def _summary_row(summary: dict[str, float]) -> dict[str, float]:
 
 
 def _config_label(config: tt.Config) -> dict[str, Any]:
-    return {"temperature": config.temperature, "logq": config.logq}
+    return {"temperature": config.temperature, "logq": config.logq, "max_history": config.max_history}
 
 
 class _Validator:
@@ -92,7 +99,8 @@ class _Validator:
             self.best = Candidate(self.config, stat.epoch, summary, per_user)
         if self.progress is not None:
             self.progress(
-                f"temperature {self.config.temperature:g} logq {self.config.logq}: epoch {stat.epoch} "
+                f"temperature {self.config.temperature:g} logq {self.config.logq} history {self.config.max_history}: "
+                f"epoch {stat.epoch} "
                 f"loss {stat.loss:.4f} val {PRIMARY} {summary[PRIMARY]:.4f}"
             )
 
@@ -103,8 +111,10 @@ def tune(
     epochs: int,
     base: tt.Config = DEFAULT_BASE,
     progress: Progress | None = None,
+    histories: Sequence[int] = DEFAULT_HISTORIES,
 ) -> tuple[list[dict[str, Any]], list[Candidate], list[list[ev.FloatArray]]]:
-    """Train every configuration on the training positives, scoring validation after every epoch.
+    """Train every configuration (``grid`` crossed with ``histories``) on the training positives, scoring validation
+    after every epoch.
 
     Returns one row per configuration (its learning curve and best epoch), each configuration's best candidate, and
     every epoch's per-user validation NDCG@10 (one list per configuration).
@@ -114,8 +124,8 @@ def tune(
     rows: list[dict[str, Any]] = []
     bests: list[Candidate] = []
     per_user: list[list[ev.FloatArray]] = []
-    for temperature, logq in grid:
-        config = replace(base, temperature=temperature, logq=logq, epochs=epochs)
+    for temperature, logq, max_history in configurations(grid, histories):
+        config = replace(base, temperature=temperature, logq=logq, epochs=epochs, max_history=max_history)
         validator = _Validator(p, seq, config, progress)
         tt.train(seq, genres, config, validator)
         if validator.best is None:  # train calls back once per epoch and epochs >= 1
@@ -126,12 +136,18 @@ def tune(
     return rows, bests, per_user
 
 
+def configurations(grid: Sequence[tuple[float, bool]], histories: Sequence[int]) -> list[tuple[float, bool, int]]:
+    """The tuning order: each (temperature, logQ) pair with every history length, pairs outer."""
+    return [(temperature, logq, n) for temperature, logq in grid for n in histories]
+
+
 def _check_inputs(
     grid: Sequence[tuple[float, bool]],
     epochs: int,
     seeds: Sequence[int],
     knn_grid: Sequence[tuple[int, float]],
     base: tt.Config,
+    histories: Sequence[int],
 ) -> None:
     """Everything that could fail later, checked before the first minute of training (review round 1: an empty
     item-kNN grid, a repeated configuration and an unusable later seed all failed only after tuning)."""
@@ -139,15 +155,19 @@ def _check_inputs(
         raise ValueError("the grid is empty")
     if len(set(grid)) != len(grid):
         raise ValueError(f"the grid repeats a configuration: {list(grid)}")
+    if not histories:
+        raise ValueError("no history lengths")
+    if len(set(histories)) != len(histories):
+        raise ValueError(f"history lengths repeat: {list(histories)}")
     if not seeds:
         raise ValueError("no seeds")
     if len(set(seeds)) != len(seeds):
         raise ValueError(f"seeds repeat: {list(seeds)}")
     if not knn_grid:
         raise ValueError("the item-kNN grid is empty")
-    for temperature, logq in grid:
+    for temperature, logq, max_history in configurations(grid, histories):
         for seed in seeds:
-            replace(base, temperature=temperature, logq=logq, epochs=epochs, seed=seed).check()
+            replace(base, temperature=temperature, logq=logq, epochs=epochs, max_history=max_history, seed=seed).check()
     for k, shrink in knn_grid:
         ItemKNN(k=k, shrink=shrink)  # its constructor checks k and shrink
 
@@ -170,10 +190,12 @@ def run(
     knn_grid: Sequence[tuple[int, float]] = experiment.DEFAULT_GRID,
     base: tt.Config = DEFAULT_BASE,
     progress: Progress | None = None,
+    *,
+    histories: Sequence[int] = DEFAULT_HISTORIES,
 ) -> dict[str, Any]:
-    _check_inputs(grid, epochs, seeds, knn_grid, base)
+    _check_inputs(grid, epochs, seeds, knn_grid, base, histories)
     base = replace(base, seed=seeds[0])
-    rows, bests, per_epoch = tune(p, grid, epochs, base, progress)
+    rows, bests, per_epoch = tune(p, grid, epochs, base, progress, histories)
     chosen_index = max(range(len(bests)), key=lambda i: bests[i].summary[PRIMARY])
     chosen = bests[chosen_index]
     for row, candidate in zip(rows, bests, strict=True):
@@ -192,7 +214,12 @@ def run(
             low, high = ev.paired_bootstrap_ci(chosen.per_user, per_user, seed=SEED)
             point[DIAGNOSTIC] = [low, high]
             if low <= 0 and not (i == chosen_index and point["epoch"] == chosen.epoch):
-                label = {"temperature": row["temperature"], "logq": row["logq"], "epoch": point["epoch"]}
+                label = {
+                    "temperature": row["temperature"],
+                    "logq": row["logq"],
+                    "max_history": row["max_history"],
+                    "epoch": point["epoch"],
+                }
                 close_candidates.append(label)
 
     knn = experiment.tune_item_knn(p, knn_grid)
@@ -231,7 +258,7 @@ def run(
 
     return {
         "protocol": (
-            "leave-last-out; (temperature, logQ, epochs) chosen on validation by "
+            "leave-last-out; (temperature, logQ, history length, epochs) chosen on validation by "
             + PRIMARY
             + "; retrained on train+validation; test"
         ),
@@ -242,7 +269,10 @@ def run(
             "validation runs": len(tt.example_positions(tt.sequences(p, include_val=False))[0]),
             "test runs": len(tt.example_positions(test_seq)[0]),
         },
-        "fixed": {k: v for k, v in base.as_dict().items() if k not in ("temperature", "logq", "epochs", "seed")},
+        "fixed": {
+            k: v for k, v in base.as_dict().items() if k not in ("temperature", "logq", "max_history", "epochs", "seed")
+        },
+        "grid": {"temperature, logq": [list(pair) for pair in grid], "max_history": list(histories)},
         "validation": {
             "two-tower": rows,
             "item-knn": {"k": knn_best["k"], "shrink": knn_best["shrink"], **_summary_row(knn_best)},
@@ -296,7 +326,7 @@ def table(result: dict[str, Any]) -> str:
         "item-knn": f"item-kNN (k={knn['k']}, shrink={knn['shrink']:g})",
         "two-tower": (
             f"two-tower (τ={chosen['temperature']:g}, logQ {'on' if chosen['logq'] else 'off'}, "
-            f"{chosen['epochs']} epochs, seed {result['test']['two-tower']['seed']})"
+            f"history {chosen['max_history']}, {chosen['epochs']} epochs, seed {result['test']['two-tower']['seed']})"
         ),
     }
     for name, label in labels.items():

@@ -99,6 +99,7 @@ def _twotower(args: argparse.Namespace) -> int:
             seeds=args.seeds,
             knn_grid=experiment.DEFAULT_GRID if args.knn_grid is None else args.knn_grid,
             progress=progress,
+            histories=args.histories,
         ),
     }
     out = args.out or Path("results") / args.dataset / "twotower.json"
@@ -134,7 +135,7 @@ def _leakage(args: argparse.Namespace) -> int:
     return 0
 
 
-FIXED_SETTINGS = frozenset({"dim", "hidden", "batch_size", "lr", "max_history"})
+FIXED_SETTINGS = frozenset({"dim", "hidden", "batch_size", "lr"})
 
 
 def _reported_config(path: Path, dataset: str, manifest: dict[str, Any] | None = None) -> tt.Config:
@@ -143,7 +144,8 @@ def _reported_config(path: Path, dataset: str, manifest: dict[str, Any] | None =
 
     With ``manifest`` (the processed data about to be used), the file must also have been produced from exactly that
     data: the same parameters, counts and sources. Every fixed setting must be present (review round 2: missing ones
-    silently took today's defaults).
+    silently took today's defaults). The history length is chosen on validation from day 3 and fixed in a day-2 file,
+    so it must be in exactly one of the two.
     """
     try:
         result = json.loads(path.read_text())
@@ -154,10 +156,19 @@ def _reported_config(path: Path, dataset: str, manifest: dict[str, Any] | None =
             if result["prepared"] != on_disk:
                 raise prepare.PrepareError(f"{path} was produced from other prepared data than {dataset}'s on disk")
         chosen, fixed = result["chosen"]["two-tower"], result["fixed"]
-        if not isinstance(fixed, dict) or set(fixed) != FIXED_SETTINGS:
-            raise prepare.PrepareError(f"{path}: fixed settings {fixed!r}, expected exactly {sorted(FIXED_SETTINGS)}")
+        if not isinstance(fixed, dict) or not isinstance(chosen, dict):
+            raise prepare.PrepareError(f"{path}: fixed settings {fixed!r}, chosen {chosen!r}: expected objects")
+        fixed = dict(fixed)
+        if ("max_history" in fixed) == ("max_history" in chosen):
+            raise prepare.PrepareError(f"{path}: max_history must be either fixed (day 2) or chosen (day 3), not both")
+        max_history = fixed.pop("max_history") if "max_history" in fixed else chosen["max_history"]
+        if set(fixed) != FIXED_SETTINGS:
+            raise prepare.PrepareError(
+                f"{path}: fixed settings {sorted(fixed)}, expected exactly {sorted(FIXED_SETTINGS)} (and max_history)"
+            )
         config = tt.Config(
             **fixed,
+            max_history=max_history,
             temperature=chosen["temperature"],
             logq=chosen["logq"],
             epochs=chosen["epochs"],
@@ -269,6 +280,17 @@ def _temperature_grid(spec: str) -> list[tuple[float, bool]]:
     return pairs
 
 
+def _histories(spec: str) -> list[int]:
+    """Parse distinct history lengths: 1,5,50 -> [1, 5, 50]."""
+    try:
+        lengths = [_positive_int(part) for part in spec.split(",")]
+    except argparse.ArgumentTypeError:
+        raise argparse.ArgumentTypeError(f"{spec!r}: expected integers >= 1, e.g. 1,5,50") from None
+    if len(set(lengths)) != len(lengths):
+        raise argparse.ArgumentTypeError(f"{spec!r}: a history length appears twice")
+    return lengths
+
+
 def _seeds(spec: str) -> list[int]:
     try:
         seeds = [int(part) for part in spec.split(",")]
@@ -318,7 +340,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     p.add_argument("--out", type=Path, help="default: results/<dataset>/twotower.json")
     p.add_argument(
-        "--grid", type=_temperature_grid, help="temperature:logq pairs, e.g. 0.05:on,0.1:off (default: 3 x on/off)"
+        "--grid",
+        type=_temperature_grid,
+        help="temperature:logq pairs, e.g. 0.05:on,0.1:off (default: 0.05, 0.1 and 0.2 with logQ on)",
+    )
+    p.add_argument(
+        "--histories",
+        type=_histories,
+        default=list(experiment_twotower.DEFAULT_HISTORIES),
+        help="history lengths crossed with the grid (default: 1,3,5,10,20,50)",
     )
     p.add_argument("--epochs", type=_positive_int, default=experiment_twotower.DEFAULT_EPOCHS)
     p.add_argument("--seeds", type=_seeds, default=list(experiment_twotower.DEFAULT_SEEDS), help="default: 0,1,2")

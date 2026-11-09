@@ -365,3 +365,33 @@ def test_one_bucket_per_user_is_allowed(data_dir: Path, tmp_path: Path, monkeypa
     assert _leakage(data_dir, source, "--buckets", str(n_users), "--out", out) == 0
     assert _leakage(data_dir, source, "--buckets", str(n_users + 1), "--out", out) == 1
     assert asked == [n_users]
+
+
+def test_a_day_3_file_with_the_history_length_chosen_reads(data_dir: Path, tmp_path: Path) -> None:
+    # From day 3 the history length is a grid dimension: it is in "chosen", not "fixed".
+    good = _two_tower_results(data_dir)
+    fixed = {k: v for k, v in good["fixed"].items() if k != "max_history"}
+    day3 = {**good, "fixed": fixed, "chosen": {"two-tower": {**good["chosen"]["two-tower"], "max_history": 7}}}
+    source = tmp_path / "twotower.json"
+    source.write_text(json.dumps(day3))
+    config = cli._reported_config(source, "synthetic")
+    assert config.max_history == 7
+    assert config == tt.Config(**fixed, max_history=7, temperature=0.1, logq=True, epochs=2, seed=3)
+    # And a day-2 file still reads its fixed 50.
+    source.write_text(json.dumps(good))
+    assert cli._reported_config(source, "synthetic").max_history == 50
+
+
+@pytest.mark.parametrize("where", ["both", "neither"])
+def test_the_history_length_must_be_fixed_or_chosen_not_both(data_dir: Path, tmp_path: Path, where: str) -> None:
+    good = _two_tower_results(data_dir)
+    chosen = dict(good["chosen"]["two-tower"])
+    fixed = dict(good["fixed"])
+    if where == "both":
+        chosen["max_history"] = 7
+    else:
+        del fixed["max_history"]
+    source = tmp_path / "twotower.json"
+    source.write_text(json.dumps({**good, "fixed": fixed, "chosen": {"two-tower": chosen}}))
+    with pytest.raises(prepare.PrepareError, match="max_history must be either fixed"):
+        cli._reported_config(source, "synthetic")

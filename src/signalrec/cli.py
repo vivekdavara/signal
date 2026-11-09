@@ -14,6 +14,7 @@ from typing import Any
 from signalrec import (
     download,
     experiment,
+    experiment_ranking,
     experiment_twotower,
     leakage,
     leakage_twotower,
@@ -214,6 +215,43 @@ def _leakage_twotower(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ranking(args: argparse.Namespace) -> int:
+    processed = args.data_dir / "processed" / args.dataset
+    source = args.source or Path("results") / args.dataset / "twotower.json"
+    prepared = prepare.load(processed, args.dataset)
+    if prepared.manifest is None:  # as in _baselines
+        raise prepare.PrepareError(f"{processed}: loaded without its manifest")
+    config = _reported_config(source, args.dataset, prepared.manifest)
+
+    def progress(line: str) -> None:
+        if not args.quiet:
+            print(line, file=sys.stderr, flush=True)
+
+    result = {
+        "command": "signalrec " + shlex.join(args.argv),
+        "dataset": args.dataset,
+        "configuration from": str(source),
+        **experiment_ranking.run(
+            prepared, config, hidden=args.hidden, epochs=args.epochs, n=args.candidates, progress=progress
+        ),
+    }
+    out = args.out or Path("results") / args.dataset / "ranking.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2) + "\n")
+    n = result["candidates"]
+    test = result["test"]
+    print(f"held-out movie in the top {n}: {test['held-out movie retrieved (share of users)']:.4f} of test users")
+    for name in ("ndcg@10", "recall@10", "recall@50"):
+        diff = result["re-ranked minus retrieved order (paired, test)"][name]
+        low, high = diff["ci95"]
+        print(
+            f"test {name}: retrieved order {test['retrieved order'][name]['value']:.4f}, re-ranked "
+            f"{test['re-ranked'][name]['value']:.4f}, difference {diff['value']:+.4f} [{low:+.4f}, {high:+.4f}]"
+        )
+    print(f"wrote {out}")
+    return 0
+
+
 def _recommend(args: argparse.Namespace) -> int:
     prepared = prepare.load(args.data_dir / "processed" / args.dataset, args.dataset)
     model = Popularity() if args.model == "popularity" else ItemKNN(k=args.neighbours, shrink=args.shrink)
@@ -289,6 +327,17 @@ def _histories(spec: str) -> list[int]:
     if len(set(lengths)) != len(lengths):
         raise argparse.ArgumentTypeError(f"{spec!r}: a history length appears twice")
     return lengths
+
+
+def _hidden_sizes(spec: str) -> list[int]:
+    """Parse distinct ranker hidden sizes, 0 for a linear ranker: 0,16 -> [0, 16]."""
+    try:
+        sizes = [int(part) for part in spec.split(",")]
+    except ValueError:
+        sizes = [-1]
+    if any(size < 0 for size in sizes) or len(set(sizes)) != len(sizes):
+        raise argparse.ArgumentTypeError(f"{spec!r}: expected distinct integers >= 0, e.g. 0,16,64")
+    return sizes
 
 
 def _seeds(spec: str) -> list[int]:
@@ -371,6 +420,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--buckets", type=_positive_int, default=10)
     p.add_argument("--out", type=Path, help="default: results/<dataset>/leakage-twotower.json")
     p.set_defaults(run=_leakage_twotower)
+
+    p = sub.add_parser(
+        "ranking", help="retrieve the reported two-tower model's top candidates, train a ranker on validation, test it"
+    )
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    p.add_argument("--from", dest="source", type=Path, help="default: results/<dataset>/twotower.json")
+    p.add_argument(
+        "--hidden", type=_hidden_sizes, default=list(experiment_ranking.DEFAULT_HIDDEN), help="default: 0,16,64"
+    )
+    p.add_argument("--epochs", type=_positive_int, default=experiment_ranking.DEFAULT_EPOCHS)
+    p.add_argument("--candidates", type=_positive_int, default=experiment_ranking.N_CANDIDATES)
+    p.add_argument("--out", type=Path, help="default: results/<dataset>/ranking.json")
+    p.add_argument("--quiet", action="store_true", help="no progress on stderr")
+    p.set_defaults(run=_ranking)
 
     p = sub.add_parser("recommend", help="one user's recent likes and a model's top k, by title")
     p.add_argument("dataset", choices=sorted(movielens.FORMATS))

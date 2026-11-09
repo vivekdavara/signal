@@ -238,3 +238,21 @@ def test_garbage_popularity_is_an_error(store: FeatureStore) -> None:
 def test_bad_store_settings(client: redis.Redis, catalogue: fe.Catalogue, namespace: str, recent: object) -> None:
     with pytest.raises(ValueError):
         FeatureStore(client, catalogue, namespace=namespace, recent=recent)  # type: ignore[arg-type]
+
+
+def test_ranker_features_from_redis_equal_offline_ones_bit_for_bit(prepared: Prepared, store: FeatureStore) -> None:
+    """The skew test carried through to the ranker's input: the same feature vectors from either source."""
+    from signalrec import ranking as rk
+
+    store.replay(fe.events(prepared, include_val=True))
+    offline_users, offline_popularity = fe.offline(prepared, include_val=True)
+    online_popularity = store.popularity()
+    rng = np.random.default_rng(11)
+    vectors = rng.normal(size=(prepared.n_items, 8)).astype(np.float32)
+    context = rk.Context.build(store.catalogue, vectors)
+    for u in range(prepared.n_users):
+        candidates = rng.choice(prepared.n_items, size=20, replace=False).astype(np.int64)
+        scores = rng.normal(size=20)
+        a = rk.candidate_features(offline_users[u], candidates, scores, offline_popularity, context)
+        b = rk.candidate_features(store.user(u), candidates, scores, online_popularity, context)
+        assert np.array_equal(a, b), u

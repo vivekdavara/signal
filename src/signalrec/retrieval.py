@@ -41,6 +41,7 @@ IntArray = npt.NDArray[np.int64]
 Float32Array = npt.NDArray[np.float32]
 
 KINDS = ("flat", "hnsw", "ivf")
+FAISS_VERSION: str = faiss.__version__
 # FAISS's bundled stubs lack some classes (SearchParametersHNSW) and type every index as the class first assigned.
 _faiss: Any = faiss
 

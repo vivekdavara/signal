@@ -201,8 +201,11 @@ of two directories: a crash between the renames leaves the old one beside it und
 - **Retrieval** (`retrieval.py`). `Retriever` over `IndexFlatIP` (exact), `IndexHNSWFlat` or `IndexIVFFlat`, inner
   product. The user's movies are excluded inside the search by an `IDSelectorNot(IDSelectorBatch(seen))`, one query
   per call (the serving path; a selector belongs to one query), so a heavy user still gets n unseen candidates.
-  Builds run on one OpenMP thread so the same vectors build the same index. FAISS searches HNSW with
-  `max(efSearch, k)`, so asking for 200 candidates never searches with fewer than 200.
+  Builds run on one OpenMP thread so the same vectors build the same index. FAISS's HNSW search list stops at
+  `efSearch` itself (it does not take the maximum with k, which this line used to claim; review of day 3), so the
+  Retriever passes `max(ef_search, k)`, where k = n + 16 is what it asks for. The 16 extra candidates are rescored in
+  float64 and sorted by (score, index) before the cut; if the last fetched is not at least 1e-5 below the n-th, a
+  tie group may run past them, and the search repeats with twice as many (review round 2).
 - **Two OpenMP runtimes.** The macOS PyTorch and faiss-cpu wheels each bundle libomp, and they coexist in one order
   only (measured): faiss loaded first makes torch's first parallel region segfault; torch first aborts the process
   (OMP Error #15) unless `KMP_DUPLICATE_LIB_OK=TRUE`; torch first with the flag works for one-query searches, while a

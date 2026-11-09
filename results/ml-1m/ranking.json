@@ -46,7 +46,7 @@
     "rankers": [
       {
         "hidden": 0,
-        "train_seconds": 0.1734165420057252,
+        "train_seconds": 0.17606674996204674,
         "curve": [
           {
             "epoch": 1,
@@ -152,7 +152,7 @@
       },
       {
         "hidden": 16,
-        "train_seconds": 0.45754012500401586,
+        "train_seconds": 0.4638079999713227,
         "curve": [
           {
             "epoch": 1,
@@ -258,7 +258,7 @@
       },
       {
         "hidden": 64,
-        "train_seconds": 0.9275934170000255,
+        "train_seconds": 0.932772875064984,
         "curve": [
           {
             "epoch": 1,
@@ -364,9 +364,9 @@
       }
     ],
     "seconds": {
-      "train two-tower": 18.129909541923553,
-      "retrieve": 0.576915800687857,
-      "features": 0.14850660203956068
+      "train two-tower": 17.903219208004884,
+      "retrieve": 0.5779972593300045,
+      "features": 0.14698859280906618
     }
   },
   "chosen": {
@@ -603,9 +603,9 @@
       }
     },
     "seconds": {
-      "train two-tower": 18.318575749988668,
-      "retrieve": 0.5732984528876841,
-      "features": 0.14413559657987207
+      "train two-tower": 18.54502845800016,
+      "retrieve": 0.5772043938050047,
+      "features": 0.14540955401025712
     }
   },
   "re-ranked minus retrieved order (paired, test)": {

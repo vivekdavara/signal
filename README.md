@@ -359,8 +359,11 @@ A small, real gain: 6% relative on NDCG@10. The validation evidence for it is th
 retrieval fix (float32 retrieval scores, otherwise the same; `b41e283`) chose 15 epochs and its selection interval
 was [-0.0004, +0.0145], reaching zero, with a test gain of +0.0072 [+0.0042, +0.0102]. Which features carry it (post
 hoc, selection users, the chosen settings retrained without each one): the similarity to the last positive (-0.0095
-[-0.0157, -0.0040]) and the retrieval score (-0.0055 [-0.0104, -0.0004]); no other is distinguishable from zero, and
-"year unknown" is constant on ml-1m (every title has a year). On **ml-latest-small** the ranker doesn't help NDCG@10
+[-0.0157, -0.0040]) and the retrieval score (-0.0055 [-0.0104, -0.0004]) lose most, "year unknown" is constant on ml-1m
+(every title has a year). Review round 2 pointed out that this comparison is biased against every feature: the full
+ranker's setting is the best of 60 on these same users and the ablated ones get no such choice, which is why all seven
+non-constant drops are negative. Read the drops as upper bounds; only the last-positive similarity's is large next to
+that bias. On **ml-latest-small** the ranker doesn't help NDCG@10
 (-0.0023 [-0.0122, +0.0100]; Recall@50 +0.0316 [+0.0116, +0.0532]): 481 training lists, 223 of them with the held-out
 movie.
 
@@ -368,22 +371,23 @@ movie.
 
 The day-3 model retrained on training + validation; every user's 200 unseen candidates from each index against the
 protocol's exact top 200 (float64, ties to the smaller index); one query per call on one FAISS thread, 200 untimed
-warm-up queries, inverted-CDF percentiles. 16:03-16:05, on battery, load average 2.7-3.9, no sleep, nothing else
-running:
+warm-up queries, inverted-CDF percentiles. 16:20-16:23 at the final code, on battery, no sleep, nothing else
+running (the 16:03 run before review round 2's fix gave the same recalls and latencies within a few µs, one p99
+within 50 µs). "efSearch 200" searches with 216: the Retriever asks for n + 16 and passes max(efSearch, 216).
 
 | ml-1m, 3,125 movies, 6,034 queries | recall of the exact top 200 | test movie in the 200 | p50 | p99 |
 |---|---|---|---|---|
-| flat (exact) | 1.0000 | 0.6924 | 92 µs | 141 µs |
-| HNSW, M=32, efSearch 200 | 0.9966 | 0.6934 | 140 µs | 197 µs |
-| HNSW, M=32, efSearch 400 | 0.9998 | 0.6922 | 239 µs | 311 µs |
-| IVF, 56 cells, nprobe 8 | 0.6380 | 0.5870 | 49 µs | 89 µs |
-| IVF, 56 cells, nprobe 16 | 0.8397 | 0.6546 | 56 µs | 99 µs |
+| flat (exact) | 1.0000 | 0.6924 | 93 µs | 143 µs |
+| HNSW, M=32, efSearch 200 | 0.9966 | 0.6934 | 140 µs | 245 µs |
+| HNSW, M=32, efSearch 400 | 0.9998 | 0.6922 | 239 µs | 307 µs |
+| IVF, 56 cells, nprobe 8 | 0.6380 | 0.5870 | 50 µs | 97 µs |
+| IVF, 56 cells, nprobe 16 | 0.8397 | 0.6546 | 57 µs | 101 µs |
 
 At 3,125 movies the exact index is both exact and faster than HNSW: scoring every movie is 200,000 multiply-adds, less
 than walking the graph. IVF is faster still but loses a third of the exact list at nprobe 8. So serving uses the exact
 index. A **SYNTHETIC** catalogue of 200,000 vectors (real movie vectors plus noise, labelled so in the JSON; 2,000 real
-user vectors, no exclusion) shows where that changes: flat 939 µs at p50, HNSW (efSearch 200) 260 µs at recall 0.9492
-after a 32 s single-threaded build, IVF (512 cells, nprobe 32) 127 µs at recall 0.9608 after 0.5 s.
+user vectors, no exclusion) shows where that changes: flat 937 µs at p50, HNSW (efSearch 200) 261 µs at recall 0.9492
+after a 32 s single-threaded build, IVF (512 cells, nprobe 32) 129 µs at recall 0.9608 after 0.5 s.
 
 ### The feature store (`python scripts/bench_featurestore.py ml-1m`, `results/ml-1m/featurestore.json`)
 
@@ -534,6 +538,15 @@ tests, each docstring stating the defect, and its log.
 Then measurement found one more: **the retrieval benchmark segfaulted** inside torch, because it imported faiss
 before torch (DESIGN.md, "Two OpenMP runtimes"; `a4be56b`).
 
+**Round 2** (one agent at `b9cb71e`, about 7 minutes, asked what round 1's fixes broke; `tests/review_d3r2/`): the
+float64 rescoring kept a tie group's smaller indices only if it fit in the 16-candidate margin (50 tied movies, the cut
+inside them: indices 10-14 kept instead of 0-4); the search now widens until the cut is clear (`823e08c`). The HNSW
+docs said `max(efSearch, n)` where the code uses n + 16 (docs fixed, its test adapted to the documented value);
+`FeatureStore.user(3.0)` still read an empty user, as round 1 had fixed only writes (`1ef51b5`); `--candidates 5`
+was a traceback, not a usage error (`4f66dc3`). Its 3 surviving mutants (rescoring in float32, `>=` for the int64
+bound, the bool refusal dropped) are killed. The ablation's bias above is its point too. Re-run after the fixes, the
+ranking results are identical and the benchmark's recalls unchanged.
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are
@@ -592,7 +605,8 @@ before torch (DESIGN.md, "Two OpenMP runtimes"; `a4be56b`).
   batch search hung, so `retrieval.py` imports torch first and searches one query at a time. The tests check FAISS's
   answers in that setting.
 - The ranker's gain on ml-1m (+0.0078 NDCG@10 on test) is barely established on validation: its selection-users
-  interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring.
+  interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring. Its feature
+  ablation compares a chosen setting with unchosen ones on the same users, so every drop is biased upward.
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
   and above about 2^33 ≈ 8.6e9 times a pair's co-count rounds it to zero (checked: a co-count-1 pair survives a shrink
   of 8e9 and vanishes at 9e9). Nothing refuses such a shrink; the useful range is 0 to about 100.

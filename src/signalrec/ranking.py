@@ -103,6 +103,10 @@ def candidate_features(
     if len(user.recent):
         last = context.item_vectors[int(user.recent[-1])].astype(np.float64)
         out[:, 7] = context.item_vectors[candidates].astype(np.float64) @ last
+    # A NaN would rank first in ranks_after's counting and last in rerank's sort (review of day 3); a negative count
+    # (log1p of it) or a non-finite retrieval score is a bug upstream, not a feature.
+    if not np.isfinite(out).all():
+        raise ValueError("a candidate feature is not finite (a negative count, or a non-finite retrieval score)")
     return out
 
 
@@ -123,9 +127,16 @@ class RankerWeights:
         out: Float64Array = x[:, 0]
         return out
 
+    def finite_scores(self, features: Float64Array) -> Float64Array:
+        """``score``, refusing a NaN or infinite score: no order of the candidates is right for one."""
+        scores = self.score(features)
+        if not np.isfinite(scores).all():
+            raise ValueError("the ranker scored a candidate NaN or infinite")
+        return scores
+
     def rerank(self, candidates: IntArray, features: Float64Array) -> IntArray:
         """The candidates by descending ranker score; ties keep the retrieved order."""
-        order = np.argsort(-self.score(features), kind="stable")
+        order = np.argsort(-self.finite_scores(features), kind="stable")
         out: IntArray = candidates[order]
         return out
 
@@ -250,7 +261,7 @@ def ranks_after(weights: RankerWeights | None, lists: Lists) -> IntArray:
         if weights is None:
             out[row] = label + 1
             continue
-        scores = weights.score(lists.features[row, :real])
+        scores = weights.finite_scores(lists.features[row, :real])
         # Rank = 1 + higher scores + equal scores earlier in the retrieved order (the stable sort's tie rule).
         target = scores[label]
         out[row] = 1 + int((scores > target).sum()) + int((scores[:label] == target).sum())

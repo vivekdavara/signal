@@ -1,0 +1,209 @@
+{
+  "command": "python scripts/same_second.py ml-1m --out results/ml-1m/same-second.json",
+  "dataset": "ml-1m",
+  "split": "test; post hoc, nothing chosen from it",
+  "tied": "the test movie's timestamp equals the validation movie's (the order between them is by movie id)",
+  "share of users tied": 0.314385150812065,
+  "configurations": {
+    "two-tower (day 3)": {
+      "dim": 64,
+      "hidden": 128,
+      "temperature": 0.1,
+      "logq": true,
+      "epochs": 8,
+      "batch_size": 1024,
+      "lr": 0.003,
+      "max_history": 3,
+      "seed": 0
+    },
+    "two-tower (day 2)": {
+      "dim": 64,
+      "hidden": 128,
+      "temperature": 0.1,
+      "logq": true,
+      "epochs": 17,
+      "batch_size": 1024,
+      "lr": 0.003,
+      "max_history": 50,
+      "seed": 0
+    }
+  },
+  "item-knn": {
+    "k": 3,
+    "shrink": 10.0
+  },
+  "groups": {
+    "all": {
+      "users": 6034,
+      "ndcg@10": {
+        "two-tower (day 3)": {
+          "value": 0.12199825416202406,
+          "ci95": [
+            0.11549501630609423,
+            0.12857799069686493
+          ]
+        },
+        "two-tower (day 2)": {
+          "value": 0.07127109456148141,
+          "ci95": [
+            0.06629092696482092,
+            0.0765780294215411
+          ]
+        },
+        "item-knn": {
+          "value": 0.03144302301866519,
+          "ci95": [
+            0.02798898611057588,
+            0.03489464460321832
+          ]
+        },
+        "popularity": {
+          "value": 0.019263906660032585,
+          "ci95": [
+            0.016618521351244756,
+            0.02212903756116797
+          ]
+        }
+      },
+      "paired differences, ndcg@10": {
+        "two-tower (day 3) minus two-tower (day 2)": {
+          "value": 0.05072715960054265,
+          "ci95": [
+            0.04352941457391403,
+            0.05730373598154254
+          ]
+        },
+        "two-tower (day 3) minus item-knn": {
+          "value": 0.09055523114335887,
+          "ci95": [
+            0.08392268246981102,
+            0.09747692047020491
+          ]
+        },
+        "two-tower (day 2) minus item-knn": {
+          "value": 0.03982807154281622,
+          "ci95": [
+            0.03453129381862299,
+            0.045312827865772114
+          ]
+        }
+      }
+    },
+    "tied": {
+      "users": 1897,
+      "ndcg@10": {
+        "two-tower (day 3)": {
+          "value": 0.20460773387042885,
+          "ci95": [
+            0.18973426917111336,
+            0.21960284007632835
+          ]
+        },
+        "two-tower (day 2)": {
+          "value": 0.10036682627354102,
+          "ci95": [
+            0.09015775320287624,
+            0.11094401515424185
+          ]
+        },
+        "item-knn": {
+          "value": 0.04087895664151882,
+          "ci95": [
+            0.03480084968708372,
+            0.04714191384129568
+          ]
+        },
+        "popularity": {
+          "value": 0.018167396226121294,
+          "ci95": [
+            0.014463848617615394,
+            0.02295430439699625
+          ]
+        }
+      },
+      "paired differences, ndcg@10": {
+        "two-tower (day 3) minus two-tower (day 2)": {
+          "value": 0.10424090759688784,
+          "ci95": [
+            0.09005517243696334,
+            0.11754478192552087
+          ]
+        },
+        "two-tower (day 3) minus item-knn": {
+          "value": 0.16372877722891005,
+          "ci95": [
+            0.14928624912091415,
+            0.17758187386339114
+          ]
+        },
+        "two-tower (day 2) minus item-knn": {
+          "value": 0.0594878696320222,
+          "ci95": [
+            0.04894816568347763,
+            0.07068729496336368
+          ]
+        }
+      }
+    },
+    "untied": {
+      "users": 4137,
+      "ndcg@10": {
+        "two-tower (day 3)": {
+          "value": 0.08411810356815315,
+          "ci95": [
+            0.07724281097156044,
+            0.09060788905399794
+          ]
+        },
+        "two-tower (day 2)": {
+          "value": 0.05792939694055392,
+          "ci95": [
+            0.05228290526360821,
+            0.06360820434340535
+          ]
+        },
+        "item-knn": {
+          "value": 0.027116224352348214,
+          "ci95": [
+            0.02319338288889367,
+            0.031008007622971456
+          ]
+        },
+        "popularity": {
+          "value": 0.01976670586069242,
+          "ci95": [
+            0.016348013280266315,
+            0.022867292773637336
+          ]
+        }
+      },
+      "paired differences, ndcg@10": {
+        "two-tower (day 3) minus two-tower (day 2)": {
+          "value": 0.02618870662759923,
+          "ci95": [
+            0.019088894399965035,
+            0.03279219964904049
+          ]
+        },
+        "two-tower (day 3) minus item-knn": {
+          "value": 0.057001879215804935,
+          "ci95": [
+            0.04922930620087293,
+            0.06428028892749442
+          ]
+        },
+        "two-tower (day 2) minus item-knn": {
+          "value": 0.030813172588205706,
+          "ci95": [
+            0.02455313518041111,
+            0.03753914087298242
+          ]
+        }
+      }
+    }
+  },
+  "bootstrap": {
+    "resamples": 1000,
+    "seed": 20261107
+  }
+}

@@ -7,16 +7,19 @@ subset of the leaky model's (training + validation, at any time), so the two dif
 cut. It is also stricter than per-user as-of for every user but the bucket's first (it drops what happened between the
 cut and their own test time), so it removes more than the leak: in particular **the bucket's own users' recent
 positives**, which are their own past and no leak at all. So a second model per bucket keeps the bucket's own users'
-training and validation positives whatever their time ("own histories kept"). That one removes less than the leak in
-one respect (a bucket-mate's positives later than a user's test time are kept: a small leak within the bucket) and
-more in another (other buckets' positives between the cut and a user's test time are dropped). Neither is a strict
-bound; the two together say how much the answer depends on the bucketing, and more buckets narrow both. Also
+training and validation positives whatever their time ("own histories kept"). That one keeps a leak of its own: a
+bucket-mate's positives at or after a user's test time. It is not small (review round 3): in ml-1m's first bucket,
+468 of its 43,520 training examples are from before the cut and the rest are the bucket's own users', many later than
+a given user's test item. It also drops other buckets' positives between the cut and a user's test time. So the
+strict model overstates the leak's worth and the own-histories model may understate it: the two bracket it, roughly,
+and more buckets narrow both. Also
 (review round 2): an early bucket's model sees fewer examples, so with the same number of epochs it also takes fewer
 optimiser steps; and the configuration was chosen on the leaky validation run.
 
 Each bucket's users are then ranked exactly as in the reported test run: user vectors from their own training +
-validation history (the last 50 positives), that history excluded, ties to the smaller index. The "leaky" side is the
-reported configuration trained on the whole training + validation history, as the two-tower test row is. The paired
+validation history (the last ``max_history`` positives), that history excluded, ties to the smaller index. The "leaky"
+side is the reported configuration trained on the whole training + validation history, as the two-tower test row is.
+The paired
 difference over all users is what the leak is worth to the model.
 """
 

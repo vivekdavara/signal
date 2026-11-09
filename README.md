@@ -259,12 +259,13 @@ that keeps its own users' training and validation positives whatever their time:
 | as of each bucket's cut, everything after it dropped | 0.0354 | +0.0359 [+0.0310, +0.0412] |
 | as of the cut, the bucket's own histories kept | 0.0712 | +0.0001 [-0.0048, +0.0054] |
 
-So on ml-1m the leak itself is worth nothing measurable to the two-tower model either; what the model needs is each
-user's *own* recent sequence in its training data. A check: the last bucket's own-histories model trains on exactly the
-reported model's 562,308 examples and scores exactly its 0.0335. Neither version is a strict bound (the second keeps a
-bucket-mate's positives later than a user's own test item, a small leak; both drop other buckets' positives between
-the cut and each test item; `leakage_twotower.py` says which way each errs), but they agree that the leak is small next
-to the user's own past. On **ml-latest-small** (601 users over 22 years, 60 per bucket) a gap remains even with own
+So the two estimates bracket the leak's worth, roughly: between nothing measurable and half the model. Review round 3
+showed that the second one leaks too, and not a little: it keeps a bucket-mate's positives later than a user's own
+test item, and in ml-1m's first bucket only 468 of its 43,520 training examples are from before the cut. What the
+pair can't say how much of the first estimate's drop was the leak and how much was users' own recent past. A
+check on the code: the last bucket's own-histories model trains on exactly the reported model's 562,308 examples and scores
+exactly its 0.0335. Narrowing the bracket needs more, smaller buckets (each one is another training run; day 3 or 4
+if there's time). On **ml-latest-small** (601 users over 22 years, 60 per bucket) a gap remains even with own
 histories kept: NDCG@10 0.0523 against 0.0308, +0.0215 [+0.0094, +0.0356]. With so few users per bucket, an early
 bucket's model learns from very little, so that gap mixes the leak with plain data volume; this run can't separate
 them.
@@ -370,7 +371,15 @@ Its most useful note was a hunch, which the code confirmed: the as-of model trai
 before the cut, which the leaky model never sees, so "the as-of model knows less" wasn't true and the docstring's
 bound didn't hold. The as-of model now trains on training + validation positives before the cut only, a subset of the
 leaky model's data. 24 surviving mutants, including **the ablation reading the test items** (`main()` had no test);
-each now fails a test (`7faa1a9`, `b9d7045`). Findings per round: 7, then 5.
+each now fails a test (`7faa1a9`, `b9d7045`).
+
+**Round 3** (at `eca3bd9`, about 10 minutes) checked round 2's fixes and the second as-of model. 5 defects: an
+integer too large for a float raised `OverflowError` from `Config.check` (and a traceback from `leakage-twotower`);
+round 2's type rule refused NumPy floats; the learning rate had no bound (`lr=1e30` trained on NaN, now at most 1);
+the recency ablation coerced the results file's item-kNN `k` (`true` ran as 1, `2.7` as 2). And its hunch changed a
+conclusion: the own-histories model leaks too, and not a little (above), so "the leak is worth nothing" became a
+bracket. 17 surviving mutants, all now failing a test. Findings per round: 7, 5, 5, each mostly in code written
+since the round before.
 
 ## Design decisions
 
@@ -397,8 +406,8 @@ each now fails a test (`7faa1a9`, `b9d7045`). Findings per round: 7, then 5.
 
 ## Limitations
 
-- The per-user split's cross-user time leakage is measured, not removed: for popularity (day 1) and for the two-tower
-  model (day 2, "What is the leak worth to the two-tower model?" above).
+- The per-user split's cross-user time leakage is measured, not removed: for popularity (day 1, worth almost nothing)
+  and for the two-tower model (day 2, bracketed between nothing measurable and half the model's NDCG@10; above).
 - The two-tower choice is the best of 120 validation candidates and item-kNN's the best of 30, on the same
   validation users that are then used to compare them, so the validation comparison slightly favours the larger
   search (review round 1 raised this). The test comparison is not affected: test is touched once per model.

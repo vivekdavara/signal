@@ -210,13 +210,14 @@ that DESIGN's fixed 50-item history is far from the best (5 items: 0.1233 agains
 that would be acting on one seed of a post-hoc look; day 3 puts the history length in the grid.
 
 **Does the split's time leak help the model more than it helped popularity?**
-On ml-1m, no. The first check (`leakage_twotower.py`) retrained the model, per test-time bucket, on only what existed
-before the bucket's earliest test time, and the score halved (0.0713 to 0.0354). That looked like a big leak but
-wasn't: the cut also removed each user's *own* recent positives, which are their past, not the future. Keeping the
-bucket's own users' histories gives 0.0712 against 0.0713 (paired +0.0001 [-0.0048, +0.0054]). The last bucket is a
-built-in check: with its own histories kept it trains on exactly the reported model's data and scores exactly the
-same. On ml-latest-small (60 users per bucket over 22 years) a gap remains, but there the early buckets also train on
-very little, so it mixes the leak with data volume.
+Probably more, but this check only brackets it. `leakage_twotower.py` retrains the model per test-time bucket on only
+what existed before the bucket's earliest test time: the score halves (0.0713 to 0.0354), but that also removes each
+user's *own* recent positives, which are their past, so it overstates the leak. A second model keeps the bucket's own
+users' histories and scores 0.0712, but it keeps bucket-mates' positives from after a user's test item, a leak of its
+own and not a small one (review round 3: in the first bucket, 468 of 43,520 examples predate the cut). So the leak is
+worth somewhere between nothing measurable and half the model's NDCG@10; more, smaller buckets would narrow it. The
+last bucket is a built-in check that the code does what it says: with its own histories kept it trains on exactly the
+reported model's data and scores exactly the same.
 
 **What was the most important thing the reviews found?**
 That my tests couldn't see inside training. Every test recomputed results through the same `train` and `embed` it

@@ -207,9 +207,10 @@ JSON):
 | logQ on: coverage@10 at that epoch | 0.71 | 0.62 | 0.48 |
 | logQ off: coverage@10 at that epoch | 1.00 | 1.00 | 0.99 |
 
-- **logQ correction is most of the model.** Without it, every temperature loses about 0.03 NDCG@10 (40%), and the
-  top-10 lists cover the entire catalogue: in-batch negatives are popularity-weighted, so the uncorrected model learns
-  to push popular movies down, and recommends the long tail to everyone.
+- **logQ correction matters more than anything else in the grid.** Without it, every temperature loses about 0.03
+  NDCG@10 (40%; still above item-kNN's 0.0386 on validation), and the top-10 lists cover the entire catalogue:
+  in-batch negatives are popularity-weighted, so the uncorrected model learns to push popular movies down, and
+  recommends the long tail to everyone.
 - **The choice is firm in configuration and soft in epochs.** τ=0.05 with logQ is indistinguishable from the chosen
   τ=0.1 (paired interval [-0.0025, +0.0072]); everything without logQ, and τ=0.2, is clearly worse. 27 of the other
   119 (configuration, epoch) candidates are indistinguishable from the chosen one, all of them logQ-on at τ 0.05 or

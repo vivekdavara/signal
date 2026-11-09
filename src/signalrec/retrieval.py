@@ -20,8 +20,18 @@ Builds run on one thread, so the same vectors give the same index (HNSW's parall
 
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from typing import Any
+
+if sys.platform == "darwin":
+    # PyTorch's and faiss-cpu's macOS wheels each bundle their own libomp. In a process that has used both (the tests,
+    # an experiment that trains and then retrieves), the second runtime to start aborts the process with OMP Error #15
+    # unless this is set. Intel documents it as an unsupported escape hatch; the tests run FAISS against a NumPy brute
+    # force in that same process, so a wrong answer would fail them. Serving imports no torch (DESIGN.md, "Day 4"),
+    # and Linux wheels use libgomp, which has no such check.
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import faiss
 import numpy as np

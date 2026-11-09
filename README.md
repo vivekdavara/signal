@@ -495,6 +495,17 @@ since the round before.
   epoch count is one more hyperparameter with a paired interval, and the test run retrains for exactly that many.
 - **Evaluation through exported embeddings** (day 2). The towers become two NumPy matrices and go through the same
   exact-rank code as the baselines, which is also what serving will use: no PyTorch on the request path.
+- **The history length is a hyperparameter like any other** (day 3). A post-hoc ablation suggested it; the protocol
+  chose it, on validation, from a grid that includes day 2's value.
+- **Exclude seen movies inside the index search** (day 3), with a FAISS ID selector, rather than filtering afterwards:
+  a user with 1,000 positives would otherwise get a handful of the 200 candidates the ranker expects.
+- **One function computes the ranker's features from either source** (day 3). Offline features and Redis features
+  are both a `UserFeatures` plus a popularity array, so skew can only come from the sources disagreeing, and a test
+  compares those exactly (integers) and then the feature vectors bit for bit.
+- **A Lua script per event, guarded by the seen set** (day 3). Atomic (no reader sees half an event) and idempotent
+  (a redelivered event changes nothing), which an at-least-once event stream needs.
+- **A listwise ranker trained on validation lists, chosen on a held-out fifth of them** (day 3). It never sees a test
+  label, and the test lists are retrieved by a model that never saw the test movies.
 
 ## Limitations
 
@@ -510,6 +521,15 @@ since the round before.
   their numbers. On one machine a seed gives the same weights (a test).
 - Item-kNN's similarity is cosine on binary likes; no recency weighting, which the k results suggest would help.
 - ml-latest-small is too small to separate the baselines at NDCG@10; it is the CI dataset, not the results dataset.
+- The split breaks same-second ties by movie id, and 31.4% of ml-1m users rated their test movie in the same second
+  as their validation movie; about two thirds of the 3-item history's gain over day 2 comes from those users
+  (`scripts/same_second.py`). Reported as measured, with the untied numbers beside it; not fixed.
+- The feature store appends events in arrival order; offline lists are in event-time order. A late event online
+  becomes the most recent one. The replay sorts, so the skew test can't see it.
+- On macOS, PyTorch and FAISS each bundle libomp and run side by side under `KMP_DUPLICATE_LIB_OK` (DESIGN.md, "As
+  built (day 3)"), which Intel calls unsupported; the tests check FAISS's answers in that setting.
+- The ranker's gain on ml-1m (+0.0072 NDCG@10 on test) was not established on validation: its selection-users
+  interval reached zero.
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
   and above about 2^33 ≈ 8.6e9 times a pair's co-count rounds it to zero (checked: a co-count-1 pair survives a shrink
   of 8e9 and vanishes at 9e9). Nothing refuses such a shrink; the useful range is 0 to about 100.
@@ -528,14 +548,23 @@ src/signalrec/
   experiment_twotower.py   the two-tower model by the same protocol
   leakage.py      the split's calendar-time leakage, measured
   leakage_twotower.py      ... and what it is worth to the two-tower model
+  retrieval.py    FAISS indexes (exact, HNSW, IVF) with the user's movies excluded in the search
+  features.py     offline features (recent positives, seen set, genre and year counts, popularity), event replay order
+  featurestore.py the same features in Redis: a Lua script per event, snapshot reads
+  ranking.py      the ranker's features, model, listwise training and NumPy export
+  experiment_ranking.py    retrieve -> rank by the protocol, and the post-hoc feature ablation
   recommend.py    one user's recommendations by title
   synthetic.py    a synthetic dataset for tests and CI
   cli.py          signalrec download | synthetic | prepare | baselines | leakage | recommend | twotower |
-                  leakage-twotower
+                  leakage-twotower | ranking
 scripts/compare_results.py   CI's check against the committed results
 scripts/bench_pipeline.py    stage timings and the similarity build's memory by block size
 scripts/recency_ablation.py  validation-only: history length for item-kNN and the two-tower model
-results/<dataset>/{baselines,leakage,twotower,leakage-twotower}.json, results/ml-1m/recency-ablation.json
+scripts/same_second.py       test, post hoc: each model's NDCG@10 for users tied and untied in the test's second
+scripts/bench_retrieval.py   approximate vs exact top 200, per-query latency (real and a synthetic large catalogue)
+scripts/bench_featurestore.py  replay throughput, one user's read latency, the skew check on a whole dataset
+results/<dataset>/{baselines,leakage,twotower,twotower-day2,leakage-twotower,ranking}.json,
+results/ml-1m/{recency-ablation,same-second,retrieval,featurestore}.json
 ```
 
 ## License

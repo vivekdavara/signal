@@ -190,6 +190,50 @@ of two directories: a crash between the renames leaves the old one beside it und
   from Redis after replaying the same events, and requires them to be equal: training-serving skew is a bug class
   with a test.
 
+### As built (day 3)
+
+- **History length in the grid** (`experiment_twotower.py`). The configurations are the (temperature, logQ) pairs
+  crossed with `--histories` (default 1, 3, 5, 10, 20, 50), pairs outer; the chosen length is reported under
+  `"chosen"`, no longer `"fixed"`. The default grid keeps logQ on (τ ∈ {0.05, 0.1, 0.2}): on day 2 every logQ-off
+  configuration lost about 0.03 validation NDCG@10 with an interval excluding zero, a validation result carried
+  forward. A results file holds `max_history` in exactly one of the two places, so day 2's files
+  (`twotower-day2.json`) still read.
+- **Retrieval** (`retrieval.py`). `Retriever` over `IndexFlatIP` (exact), `IndexHNSWFlat` or `IndexIVFFlat`, inner
+  product. The user's movies are excluded inside the search by an `IDSelectorNot(IDSelectorBatch(seen))`, one query
+  per call (the serving path; a selector belongs to one query), so a heavy user still gets n unseen candidates.
+  Builds run on one OpenMP thread so the same vectors build the same index. FAISS searches HNSW with
+  `max(efSearch, k)`, so asking for 200 candidates never searches with fewer than 200.
+- **Two OpenMP runtimes.** The macOS PyTorch and faiss-cpu wheels each bundle libomp, and a process that uses both
+  aborts (OMP Error #15) when the second starts. `retrieval.py` sets `KMP_DUPLICATE_LIB_OK=TRUE` on macOS before
+  importing faiss. Intel documents it as unsupported; the tests run FAISS against a NumPy brute force in a process
+  that has already trained with torch, so a wrong answer would fail them. Serving imports no torch (day 4); Linux
+  wheels use libgomp.
+- **Features** (`features.py`). Per user: the last 50 positives in the split's (time, movie id) order, every positive
+  (the history filter), positives per genre, and the sum and count of the liked movies' release years (from the
+  title's trailing "(1995)"; some ml-latest-small titles have none). Per movie: positives. All integers, so offline
+  and online compare exactly. The replay order is (time, movie, user), which restricted to one user is the split's
+  order.
+- **Feature store** (`featurestore.py`, Redis on 6383). Keys `<ns>:u:<user>:recent` (list), `:seen` (set), `:genres`
+  and `:stats` (hashes), and `<ns>:popularity` (hash). One Lua script applies an event: `SADD` to `seen` first, and
+  nothing else if the movie was already there, so the script is atomic and a redelivered event is a no-op (a (user,
+  movie) pair is a positive at most once). A read is one MULTI/EXEC of four commands, so it never sees half an event;
+  values the store didn't write (a non-integer count, a movie outside the catalogue, a key of another type) are
+  errors, not features. Events are appended in arrival order: online, an event that arrives late becomes the most
+  recent one (a limitation).
+- **The skew test.** The events are replayed into Redis, and every user's features and the popularity array must equal
+  the offline ones exactly; then the ranker's feature vectors from either source must be equal bit for bit.
+- **Ranking** (`ranking.py`, `experiment_ranking.py`). Eight features per candidate, computed from a `UserFeatures` and
+  the popularity array only: retrieval score, log(1 + position), log(1 + popularity), genre affinity (the user's genre
+  shares averaged over the candidate's genres), |year − the user's mean year| / 10, year unknown, log(1 + the user's
+  positives), and the candidate's item vector against the user's last positive's. The model is linear or Linear →
+  ReLU → Linear on standardised features, trained listwise (a softmax over each list, the held-out movie as the
+  label; lists without it are skipped), Adam, 256 lists per batch, exported to NumPy. Protocol: the reported two-tower
+  configuration trained on training retrieves the top 200 unseen movies per user (exact index) for the validation
+  lists; the ranker trains on a seeded 80% of the users and (hidden size, epochs) is chosen on the other 20% by
+  NDCG@10; the test lists come from the model retrained on training + validation, and a movie not retrieved ranks
+  201. The ranker never sees a test label, and the movies it re-orders on test were retrieved by a model that never
+  saw them.
+
 ## Day 4: serving and experiments
 
 - **API (FastAPI on 8116).** `GET /recommendations/{user}?k=10`: history from Redis → user tower (exported to numpy,

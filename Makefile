@@ -46,3 +46,4 @@ results: data
 	  --out results/ml-1m/recency-ablation.json
 	for d in $(DATASETS); do $(SIGNALREC) twotower $$d --quiet && $(SIGNALREC) ranking $$d --quiet || exit 1; done
 	$(PY) scripts/bench_retrieval.py ml-1m --out results/ml-1m/retrieval.json
+	$(PY) scripts/bench_featurestore.py ml-1m --out results/ml-1m/featurestore.json

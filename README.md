@@ -179,8 +179,8 @@ sort runs through quickly. Neither matters at this size.
 Measured on 2026-11-08 (Apple M3, macOS 26.6, Python 3.11.12, PyTorch 2.15.0 on the CPU with 4 threads, NumPy
 2.4.6), on AC power, with a review agent running alongside, so the recorded seconds are not benchmarks.
 
-**ml-1m**, test, 6,034 users (`signalrec twotower ml-1m`, `results/ml-1m/twotower.json`; the baseline rows are the
-same models as day 1's, refit in the same run):
+**ml-1m**, test, 6,034 users (`signalrec twotower ml-1m` at day 2's commit `c7ca9bb`,
+`results/ml-1m/twotower-day2.json`; the baseline rows are the same models as day 1's, refit in the same run):
 
 | Model | Recall@10 | NDCG@10 | Recall@50 | NDCG@50 | Coverage@10 |
 |---|---|---|---|---|---|

@@ -178,7 +178,7 @@ as a negative for both.
 More than anything else in the grid. On ml-1m validation at τ=0.1, NDCG@10 is 0.0799 with it and 0.0496 without, and
 the same gap holds at every temperature. Without it the model's top-10 lists cover almost the whole catalogue
 (coverage@10 0.997 against 0.62): it has learned that popular movies are "usually wrong", which is the sampling bias,
-not the users. `results/ml-1m/twotower.json` has every configuration's learning curve.
+not the users. `results/ml-1m/twotower-day2.json` has every configuration's learning curve.
 
 **How are training examples built, and how do you know nothing leaks?**
 Every training positive except each user's first is a target; its history is the up to 50 positives just before it

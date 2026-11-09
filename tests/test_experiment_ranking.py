@@ -125,11 +125,15 @@ def test_the_ranker_trains_on_the_fit_users_validation_labels_only(
 
     monkeypatch.setattr(rk, "train", spy)
     er.run(prepared, TT, (0,), 1, N)
-    (lists,) = seen
+    # The ranker, then the ablation's one retraining per feature: all on the fit users' validation lists.
+    assert len(seen) == 1 + len(rk.FEATURES)
     fit_users, _ = er.split_users(prepared.n_users)
     val_lists = er.build_lists(prepared, TT, include_val=False, n=N).lists
-    assert lists.labels.tolist() == val_lists.labels[fit_users].tolist()
-    assert np.array_equal(lists.features, val_lists.features[fit_users])
+    for lists in seen:
+        assert lists.labels.tolist() == val_lists.labels[fit_users].tolist()
+    assert np.array_equal(seen[0].features, val_lists.features[fit_users])
+    for i, lists in enumerate(seen[1:]):
+        assert np.array_equal(lists.features, er.without(val_lists.subset(fit_users), i).features)
 
 
 def test_runs_are_reproducible(prepared: Prepared, result: dict[str, Any]) -> None:
@@ -210,3 +214,25 @@ def test_cut_offs_above_the_candidate_count_are_not_reported() -> None:
         "ndcg@50",
         "recall@200",
     }
+
+
+def test_the_feature_ablation_retrains_without_each_feature(prepared: Prepared, result: dict[str, Any]) -> None:
+    rows = result["feature ablation (selection users, post hoc)"]
+    assert [row["without"] for row in rows] == list(rk.FEATURES)
+    lists = er.build_lists(prepared, TT, include_val=False, n=N).lists
+    fit_users, select_users = er.split_users(prepared.n_users)
+    chosen = result["chosen"]
+    config = rk.RankerConfig(hidden=chosen["hidden"], epochs=chosen["epochs"], seed=0)
+    for i in (0, 7):  # the retrieval score and the last-positive similarity, recomputed
+        weights, _ = rk.train(er.without(lists.subset(fit_users), i), config)
+        got = rk.ranks_after(weights, er.without(lists.subset(select_users), i))
+        assert rows[i]["ndcg@10"] == float(ev.ndcg_at(got, 10).mean())
+    assert len({row["ndcg@10"] for row in rows}) > 1
+
+
+def test_without_makes_one_feature_constant() -> None:
+    lists = rk.Lists(np.ones((2, 3, 8)), np.ones((2, 3), dtype=bool), np.zeros(2, dtype=np.int64))
+    out = er.without(lists, 4)
+    assert (out.features[:, :, 4] == 0).all()
+    assert (np.delete(out.features, 4, axis=2) == 1).all()
+    assert (lists.features == 1).all()  # the input is untouched

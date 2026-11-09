@@ -134,6 +134,40 @@ def split_users(n_users: int, share: float = SELECT_SHARE, seed: int = SEED) -> 
     return np.sort(order[n_select:]), np.sort(order[:n_select])
 
 
+def without(lists: rk.Lists, feature: int) -> rk.Lists:
+    """The same lists with one feature constant (0): after standardisation it carries nothing."""
+    features = lists.features.copy()
+    features[:, :, feature] = 0.0
+    return rk.Lists(features, lists.mask, lists.labels)
+
+
+def feature_ablation(
+    fit: rk.Lists,
+    select: rk.Lists,
+    hidden: int,
+    epochs: int,
+    seed: int,
+    chosen: dict[str, ev.FloatArray],
+    n: int,
+) -> list[dict[str, Any]]:
+    """Post hoc, on the selection users (validation): the chosen ranker's settings retrained with each feature removed,
+    and the paired NDCG@10 of (without it - the chosen ranker). Nothing is chosen from it."""
+    rows = []
+    for i, name in enumerate(rk.FEATURES):
+        weights, _ = rk.train(without(fit, i), rk.RankerConfig(hidden=hidden, epochs=epochs, seed=seed))
+        per_user = metrics(rk.ranks_after(weights, without(select, i)), n)
+        low, high = ev.paired_bootstrap_ci(per_user[PRIMARY], chosen[PRIMARY], seed=SEED)
+        rows.append(
+            {
+                "without": name,
+                PRIMARY: float(per_user[PRIMARY].mean()),
+                f"minus the chosen ranker, {PRIMARY}": float(per_user[PRIMARY].mean() - chosen[PRIMARY].mean()),
+                "paired ci95": [low, high],
+            }
+        )
+    return rows
+
+
 def _check_inputs(hidden: Sequence[int], epochs: int, n: int, seed: int) -> None:
     if not hidden:
         raise ValueError("no hidden sizes")
@@ -155,6 +189,7 @@ def run(
     n: int = N_CANDIDATES,
     seed: int = 0,
     progress: Progress | None = None,
+    ablate: bool = True,
 ) -> dict[str, Any]:
     _check_inputs(hidden, epochs, n, seed)
     config.check()
@@ -184,6 +219,7 @@ def run(
     if best is None:  # hidden is non-empty and epochs >= 1
         raise RuntimeError("no ranker trained")
     _, chosen_hidden, chosen_epoch, chosen, chosen_select = best
+    ablation = feature_ablation(fit, select, chosen_hidden, chosen_epoch, seed, chosen_select, n) if ablate else None
 
     test = build_lists(p, config, include_val=True, n=n, progress=progress)
     retrieved_test = metrics(rk.ranks_after(None, test.lists), n)
@@ -209,6 +245,7 @@ def run(
         },
         "chosen": {"hidden": chosen_hidden, "epochs": chosen_epoch},
         "chosen minus retrieved order, selection users (paired)": _paired(chosen_select, retrieved_select),
+        "feature ablation (selection users, post hoc)": ablation,
         "test": {
             "held-out movie retrieved (share of users)": float((test.lists.labels >= 0).mean()),
             "retrieved order": _with_intervals(retrieved_test),

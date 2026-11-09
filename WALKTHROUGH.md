@@ -233,3 +233,91 @@ was compared with never sees, so "the as-of model knows less" was false.
 `evaluate.evaluate` takes any `Scorer` (a name and a `score(users)` method). The trained towers are exported to NumPy
 (`twotower.Embeddings`) and scored as float64 dot products, then ranked by exactly the same exact-rank code as the
 baselines, with the same tie rule and the same history exclusion. Nothing model-specific touches the metric.
+
+## Retrieval, ranking and the feature store (day 3)
+
+**Why did the history length change, and isn't that tuning on the answer?**
+Day 2 fixed the user tower's input at the last 50 positives; its recency ablation (validation only, post hoc) found 5
+far better. Day 3 makes the length a grid dimension (`--histories`, default 1, 3, 5, 10, 20, 50) crossed with the
+temperature, so the same validation rule chooses it and test is still touched once, by the choice. The ablation only
+said which values to put in the grid. logQ stays on in the default grid because day 2's validation already showed
+every logQ-off configuration losing with an interval excluding zero.
+
+**What did the history length do?**
+On ml-1m validation NDCG@10 falls steadily with length at every temperature: 0.1357 at 3 positives, 0.1261 at 5,
+0.1110 at 10, 0.0799 at 50 (τ=0.1). The chosen model (τ=0.1, 3 positives, 8 epochs) scores 0.1220 [0.1155, 0.1286]
+on test, against 0.0713 for day 2's 50-positive model and 0.0314 for item-kNN. MovieLens users rate in sessions, and
+the last few movies say much more about the next one than the mean of fifty does.
+
+**That is a big jump for reading less. Did you check it?**
+Yes, and it is partly an artefact. The split orders positives by (timestamp, movie id), and 31.4% of ml-1m users rated
+their test movie in the same second as their validation movie, so the "next" one was picked by movie id.
+`scripts/same_second.py` splits test users by that: the 3-item model's gain over day 2 is +0.1042 on the tied users
+and +0.0262 [+0.0191, +0.0328] on the untied ones. So the shorter history really is better, but about two thirds of
+the headline gain comes from the tied third. I kept the protocol's number (the split was fixed before any model) and
+report the untied one beside it (NDCG@10 0.0841; still +0.0570 over item-kNN). A cleaner fix, for later, would be to
+treat the movies of the test second as a set.
+
+**Does the ranker help?**
+A little, and only on the big dataset. On ml-1m test it lifts NDCG@10 from 0.1220 to 0.1292 (+0.0072 [+0.0042,
++0.0102]) and Recall@10 by +0.0134; on its validation selection users the same gain's interval reached zero
+([-0.0004, +0.0145]), and on ml-latest-small it doesn't help NDCG@10 at all. Retrieval already uses most of what the
+features know: the post-hoc ablation finds only the similarity to the last positive and genre affinity
+distinguishable from zero. The ceiling is retrieval: the test movie is in the top 200 for 69.2% of users.
+
+**How does retrieval exclude what the user has already seen?**
+Inside the FAISS search: `Retriever.search` passes an `IDSelectorNot(IDSelectorBatch(seen))`, so the index returns
+the best n unseen movies. Filtering the top n afterwards would leave a heavy user (ml-1m has users with over 1,000
+positives) with far fewer than n. A selector belongs to one query, so search is one query per call, which is the
+serving path anyway. `test_a_heavy_user_still_gets_n_candidates` excludes the 300 best movies and still gets 50.
+
+**Why is the exact index the reference, and how do you know it is exact?**
+`IndexFlatIP` scores every movie. The tests compare it with a float64 brute force (ties to the smaller id), and
+`test_the_retrieved_order_is_the_full_ranking_cut_at_n` shows that the retrieved order's position of the held-out
+movie is exactly its rank in `evaluate`'s full ranking. So the ranker's "retrieved order" row is the two-tower model's
+own metric, not a different number.
+
+**What goes wrong when PyTorch and FAISS share a process on a Mac?**
+Both wheels bundle their own libomp, and the second one to start aborts the process (OMP Error #15). My first FAISS
+commit went in on that failing check, because I had piped `make check` into `tail` and the pipe's status was tail's;
+the next commit fixed it and says so. `retrieval.py` sets `KMP_DUPLICATE_LIB_OK=TRUE` on macOS before importing faiss;
+Intel calls it unsupported, so the tests run FAISS against a NumPy brute force after torch has trained in the same
+process, and serving (day 4) won't import torch at all.
+
+**What is in the feature store, and why those?**
+Per user: the last 50 positives (the user tower's input and the "last positive" ranker feature), every positive (the
+history filter), positives per genre and the sum and count of the liked movies' years (ranker features); per movie,
+positives (popularity). Everything the ranker reads about a user or a movie's popularity comes from these; genres and
+years of movies are static catalogue data, not features.
+
+**How is an event applied, and what if it arrives twice?**
+One Lua script (`featurestore._RECORD`): `SADD` the movie to the user's seen set; if it was already there, return
+without touching anything else; otherwise append to the recent list and trim it, increment the genre and year
+counters and the movie's popularity. A Lua script runs atomically in Redis, so a reader never sees half an event, and
+the `SADD` guard makes a redelivered event a no-op (`test_a_redelivered_event_changes_nothing`). Reads are one
+MULTI/EXEC of four commands, so a user's features come from one moment.
+
+**How do you know online features equal offline ones?**
+`test_online_features_equal_offline_for_every_user` replays the processed data's events into Redis and compares every
+user's features and the popularity array exactly (integers, no tolerance);
+`test_ranker_features_from_redis_equal_offline_ones_bit_for_bit` carries it through to the ranker's feature vectors.
+The features are computed by one function from a `UserFeatures`, whichever side produced it, so skew can only come
+from the two sources disagreeing, which is what the test checks. `scripts/bench_featurestore.py` repeats the check on
+all of ml-1m.
+
+**What can still skew?**
+Order. Redis appends in arrival order, the offline lists are in event-time order; a late event online becomes the most
+recent one. The replay sorts, so the test can't see it. Day 4's `POST /events` has to either accept that or keep a
+sorted set by time.
+
+**How is the ranker trained without touching test?**
+Its training lists are validation lists: the two-tower model trained on training positives only retrieves 200 unseen
+movies per user, and the label is where the validation movie sits in that list. 80% of users (a seeded permutation)
+train it, the other 20% choose the hidden size and the epoch. On test, the two-tower model retrained on training +
+validation retrieves new lists, features come from training + validation, and the chosen ranker re-orders them.
+`test_the_ranker_trains_on_the_fit_users_validation_labels_only` spies on what training receives.
+
+**Why listwise?**
+The ranker's only job is to order 200 candidates for one user, and the label is one movie among them, so a softmax
+over the list is exactly that objective (`ranking.listwise_loss`). Lists whose held-out movie wasn't retrieved have no
+label and are skipped: the ranker can't fix a retrieval miss, which is why Recall@200 is its ceiling.

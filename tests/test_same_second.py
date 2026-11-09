@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from signalrec import cli, prepare
 
@@ -48,3 +50,26 @@ def test_groups_partition_the_users_and_all_is_the_reported_number(tmp_path: Pat
             groups[g]["ndcg@10"][name]["value"] * groups[g]["users"] for g in ("tied", "untied") if groups[g]["users"]
         ]
         assert np.isclose(sum(parts) / p.n_users, cell["value"])
+
+
+def test_an_empty_group_is_reported_as_no_users_not_nan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Review round 2 (day 3): with no tied users the group's mean was NaN, which json.dumps writes as NaN, not JSON.
+    assert cli.main(["synthetic", "--data-dir", str(tmp_path), "--users", "80", "--items", "120"]) == 0
+    assert cli.main(["prepare", "synthetic", "--data-dir", str(tmp_path)]) == 0
+    base = ["twotower", "synthetic", "--data-dir", str(tmp_path), "--grid", "0.1:on", "--epochs", "1", "--seeds", "0"]
+    base += ["--knn-grid", "5:0", "--quiet", "--histories", "3"]
+    day3 = tmp_path / "day3.json"
+    assert cli.main([*base, "--out", str(day3)]) == 0
+    real_load = prepare.load
+
+    def untied(*args: object, **kwargs: object) -> prepare.Prepared:
+        p = real_load(*args, **kwargs)  # type: ignore[arg-type]
+        return replace(p, test_times=p.val_times + 1)  # every test movie a second after the validation one
+
+    monkeypatch.setattr(prepare, "load", untied)
+    out = tmp_path / "same-second.json"
+    argv = ["synthetic", "--data-dir", str(tmp_path), "--day3", str(day3), "--day2", str(day3), "--out", str(out)]
+    assert same_second.main(argv) == 0
+    result = json.loads(out.read_text(), parse_constant=lambda c: pytest.fail(f"non-JSON constant {c}"))
+    assert result["groups"]["tied"] == {"users": 0, "ndcg@10": None, "paired differences, ndcg@10": None}
+    assert result["groups"]["untied"]["users"] == result["groups"]["all"]["users"]

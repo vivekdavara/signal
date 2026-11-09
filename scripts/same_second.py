@@ -88,6 +88,9 @@ def main(argv: list[str]) -> int:
     ]
     by_group: dict[str, Any] = {}
     for group, members in groups.items():
+        if not members.any():  # no tied (or no untied) users: no mean to report, and json would write NaN
+            by_group[group] = {"users": 0, "ndcg@10": None, "paired differences, ndcg@10": None}
+            continue
         by_group[group] = {
             "users": int(members.sum()),
             "ndcg@10": {name: _cell(values[members]) for name, values in ndcg.items()},
@@ -107,8 +110,11 @@ def main(argv: list[str]) -> int:
         "bootstrap": {"resamples": 1000, "seed": SEED},
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2) + "\n")
+    args.out.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
     for group, block in by_group.items():
+        if block["ndcg@10"] is None:
+            print(f"{group}: no users")
+            continue
         cells = ", ".join(f"{name} {cell['value']:.4f}" for name, cell in block["ndcg@10"].items())
         print(f"{group} ({block['users']} users): {cells}")
         for label, cell in block["paired differences, ndcg@10"].items():

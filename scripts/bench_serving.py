@@ -94,6 +94,7 @@ def server_total(header: str) -> float:
 
 
 def bench_stages(rec: Recommender, users: Sequence[int], lead_in: int, k: int) -> dict[str, Any]:
+    """Every user timed once, after an untimed lead-in over the first ``lead_in`` of them (so those are timed warm)."""
     for u in users[:lead_in]:
         rec.recommend(u, k=k)
     per_stage: dict[str, list[float]] = {s: [] for s in STAGES}
@@ -162,22 +163,23 @@ async def closed_loop(
 
 
 Row = tuple[int, float, float, float, float]  # schedule index, due, sent, done, server pipeline seconds
+Failure = tuple[int, str, float, float]  # schedule index, error, due, when it failed
 
 
 async def open_loop_part(
     send: Send, rate: float, n: int, start: float, phase: int = 0, stride: int = 1, offset: int = 0
-) -> tuple[list[Row], list[tuple[int, str]]]:
+) -> tuple[list[Row], list[Failure]]:
     """Send requests ``phase, phase + stride, ...`` of a schedule of ``n`` at ``rate`` from ``start``: one client
     process's share of the open loop (with ``stride`` processes, process j sends every stride-th request)."""
     rows: list[Row] = []
-    failures: list[tuple[int, str]] = []
+    failures: list[Failure] = []
 
     async def one(i: int, due: float) -> None:
         sent = time.perf_counter()
         try:
             server = await send(offset + i)
         except Exception as exc:  # a failed request is counted, never dropped from the books
-            failures.append((i, repr(exc)))
+            failures.append((i, repr(exc), due, time.perf_counter()))
             return
         rows.append((i, due, sent, time.perf_counter(), server))
 
@@ -198,15 +200,17 @@ def summarise_open(
     n: int,
     start: float,
     rows: list[Row],
-    failures: list[tuple[int, str]],
+    failures: list[Failure],
     trace: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Only requests scheduled after the lead-in count, failures included."""
+    """Only requests scheduled after the lead-in count, failures included: a failed request's latency is the time until
+    it failed (a lower bound on what its user waited), so failures can't make the percentiles look better (review of
+    day 4: they were left out)."""
     timed = [r for r in rows if r[0] >= n_lead]
     failed = [f for f in failures if f[0] >= n_lead]
     if trace is not None:
         trace.extend({"i": r[0], "due": r[1] - start, "sent": r[2] - start, "done": r[3] - start} for r in timed)
-    latency = [done - due for _, due, _, done, _ in timed]
+    latency = [done - due for _, due, _, done, _ in timed] + [at - due for _, _, due, at in failed]
     lateness = [sent - due for _, due, sent, _, _ in timed]
     first_due = min((r[1] for r in timed), default=start)
     last_done = max((r[3] for r in timed), default=start)
@@ -273,11 +277,11 @@ def _ready(_: int) -> int:
 
 def _open_part(
     target: Target, rate: float, n: int, start: float, phase: int, stride: int, offset: int
-) -> tuple[list[Row], list[tuple[int, str]]]:
-    async def body(send: Send) -> tuple[list[Row], list[tuple[int, str]]]:
+) -> tuple[list[Row], list[Failure]]:
+    async def body(send: Send) -> tuple[list[Row], list[Failure]]:
         return await open_loop_part(send, rate, n, start, phase, stride, offset)
 
-    out: tuple[list[Row], list[tuple[int, str]]] = asyncio.run(_with_client(target, body))
+    out: tuple[list[Row], list[Failure]] = asyncio.run(_with_client(target, body))
     return out
 
 
@@ -363,7 +367,7 @@ def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, 
                 pool.submit(_open_part, target, rate, n, start, j, processes, offset) for j in range(processes)
             ]
             rows: list[Row] = []
-            failures: list[tuple[int, str]] = []
+            failures: list[Failure] = []
             for future in open_parts:
                 r, fail = future.result()
                 rows += r

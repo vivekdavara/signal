@@ -120,7 +120,7 @@ def test_the_trace_records_every_timed_request() -> None:
 def test_the_parts_of_a_schedule_send_every_request_once_at_its_time() -> None:
     send, calls = _fake(0.001)
 
-    async def both() -> list[tuple[list[bs.Row], list[tuple[int, str]]]]:
+    async def both() -> list[tuple[list[bs.Row], list[bs.Failure]]]:
         start = time.perf_counter() + 0.02
         return list(await asyncio.gather(*(bs.open_loop_part(send, 400, 80, start, j, 3) for j in range(3))))
 
@@ -139,3 +139,17 @@ def test_lead_in_failures_are_not_counted_with_the_timed_ones() -> None:
     row = asyncio.run(bs.open_loop(send, rate=500, seconds=0.1, lead_in=0.1))
     assert row["lead-in requests (untimed)"] == 50 and row["scheduled (timed)"] == 50
     assert row["failed"] == 10 and row["completed (timed)"] == 40
+
+
+def test_failed_requests_count_in_the_latency_percentiles() -> None:
+    # Half the requests fail after 50 ms, the rest succeed in 1 ms: the p99 must show the failures' wait.
+    async def send(i: int) -> float:
+        if i % 2:
+            await asyncio.sleep(0.05)
+            raise RuntimeError("timeout")
+        await asyncio.sleep(0.001)
+        return 0.0
+
+    row = asyncio.run(bs.open_loop(send, rate=200, seconds=0.2, lead_in=0.0))
+    assert row["failed"] == 20 and row["completed (timed)"] == 20
+    assert row["latency from scheduled time (µs)"]["p99"] >= 50_000

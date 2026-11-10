@@ -100,3 +100,38 @@ def test_bad_experiment_flags_are_usage_errors(bad: str) -> None:
     with pytest.raises(SystemExit) as exc:
         cli.build_parser().parse_args(["serve", "ml-1m", "--experiment", bad])
     assert exc.value.code == 2
+
+
+def test_load_store_refuses_a_model_from_other_parameters(tmp_path: Path) -> None:
+    data = str(tmp_path / "data")
+    run("synthetic", "--data-dir", data, "--users", "40", "--items", "60")
+    run("prepare", "synthetic", "--data-dir", data)
+    two = tmp_path / "twotower.json"
+    run(
+        *("twotower", "synthetic", "--data-dir", data, "--epochs", "1", "--grid", "0.1:on", "--histories", "2"),
+        *("--seeds", "0", "--knn-grid", "2:0", "--quiet", "--out", str(two)),
+    )
+    ranking = tmp_path / "ranking.json"
+    run(
+        *("ranking", "synthetic", "--data-dir", data, "--from", str(two), "--hidden", "0", "--epochs", "1"),
+        *("--candidates", "10", "--quiet", "--out", str(ranking)),
+    )
+    model_dir = tmp_path / "model"
+    run(
+        "export",
+        "synthetic",
+        "--data-dir",
+        data,
+        "--from",
+        str(two),
+        "--ranking",
+        str(ranking),
+        "--out",
+        str(model_dir),
+    )
+    meta = json.loads((model_dir / "model.json").read_text())
+    meta["info"]["prepared"]["params"]["min_rating"] = 3.0
+    meta["sha256"] = tw._meta_hash(meta)  # a consistent model.json, exported from other parameters
+    (model_dir / "model.json").write_text(json.dumps(meta))
+    code = cli.main(["load-store", "synthetic", "--data-dir", data, "--model", str(model_dir), "--namespace", "unused"])
+    assert code == 1

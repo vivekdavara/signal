@@ -308,6 +308,11 @@ def _load_store(args: argparse.Namespace) -> int:
         prepared.user_raw_ids.tolist() == model.user_raw_ids.tolist()
     ):
         raise prepare.PrepareError("the model was exported from other prepared data")
+    # The same ids can come from other parameters (a min_rating of 3, say); the store would then hold other positives
+    # than the model was trained and evaluated with (review of day 4).
+    on_disk = None if prepared.manifest is None else {k: prepared.manifest[k] for k in ("params", "counts", "sources")}
+    if on_disk != model.info.get("prepared"):
+        raise prepare.PrepareError("the model was exported from prepared data with other parameters or sources")
     ratings = movielens.load(args.dataset, args.data_dir / "raw" / args.dataset).ratings
     store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
     if args.fresh:

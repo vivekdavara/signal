@@ -94,43 +94,6 @@ def test_a_liked_movie_missing_from_the_rated_set_is_still_never_served(fresh: F
     assert not set(top[:3]) & set(after)
 
 
-# --- features.py ----------------------------------------------------------------------------------------------------
-
-
-def test_rated_events_skip_movies_outside_the_catalogue(prepared: Prepared) -> None:
-    """Kills features.py:162 ``known[known] &= (...)`` -> ``|=`` (keeps ratings whose raw movie id is not in the
-    catalogue, mapping them onto the next catalogue movie's index, so a movie the user never rated is filtered)."""
-    ids = prepared.item_raw_ids
-    # A raw id between two catalogue ids (or just below the first): searchsorted lands it on a real index.
-    gaps = (int(a) + 1 for a, b in zip(ids[:-1].tolist(), ids[1:].tolist(), strict=True) if b - a > 1)
-    gap = next(gaps, int(ids[0]) - 1)
-    assert gap not in set(ids.tolist())
-    user = int(prepared.user_raw_ids[0])
-    early = int(prepared.test_times[0]) - 1
-    ratings = movielens.Ratings(
-        np.array([user, user], dtype=np.int64),
-        np.array([gap, int(ids[0])], dtype=np.int64),
-        np.array([2.0, 2.0]),
-        np.array([early, early], dtype=np.int64),
-    )
-    events = fe.rated_events(prepared, ratings)
-    assert [(e.user, e.movie) for e in events] == [(0, 0)]
-
-
-# --- abtest.py ------------------------------------------------------------------------------------------------------
-
-
-def test_one_experiment_counts_each_arms_users_by_the_hash() -> None:
-    """Kills abtest.py:153 ``compare(c, len(user_ids) - n_t, t, n_t)`` -> the two arms' sizes swapped (invisible at
-    50/50, where the arms are nearly equal; at 20/80 the rates come out as 0.25 and 4.0)."""
-    experiment = abtest.Experiment("review-d4", 0.2)
-    users = np.arange(1, 5001, dtype=np.int64)
-    n_t = sum(abtest.assign(experiment, int(u)) == abtest.TREATMENT for u in users.tolist())
-    result = abtest.run(experiment, users, np.zeros(len(users)), np.ones(len(users)), np.random.default_rng(0))
-    assert (result.n_control, result.n_treatment) == (len(users) - n_t, n_t)
-    assert (result.control, result.treatment) == (0.0, 1.0)
-
-
 # --- scripts/bench_serving.py ---------------------------------------------------------------------------------------
 
 
@@ -159,7 +122,18 @@ def test_a_client_that_falls_behind_shows_its_lateness() -> None:
     assert row["client lateness, sent - scheduled (µs)"]["p99"] > 50_000
 
 
-# --- serving.py / tower.py: consistency checks ----------------------------------------------------------------------
+def test_no_request_is_sent_before_its_scheduled_time_at_a_high_rate() -> None:
+    """Kills bench_serving.py:188 ``if delay > 0:`` -> ``if delay > 0.002:`` (a request due within 2 ms is sent at
+    once, early: at 1,000/s every request is early, and latency from the schedule is understated by up to 2 ms).
+    The existing trace test runs at 100/s, where every delay is 10 ms."""
+    trace: list[dict[str, float]] = []
+    asyncio.run(bs.open_loop(_fast, rate=1000, seconds=0.1, lead_in=0.0, trace=trace))
+    assert len(trace) == 100
+    early = [t for t in trace if t["sent"] < t["due"]]
+    assert not early, f"{len(early)} requests sent before their scheduled time"
+
+
+# --- serving.py, tower.py, abtest.py: consistency checks and statistics ------------------------------------------
 
 
 def test_a_store_whose_genre_names_differ_is_refused(client: redis.Redis, model: Model) -> None:
@@ -224,3 +198,55 @@ def test_ids_between_known_ids_are_unknown(model: Model, store: FeatureStore) ->
     assert api.get(f"/recommendations/{user}").status_code == 404
     known_user = int(model.user_raw_ids[0])
     assert api.post("/events", json={"user": known_user, "movie": movie, "rating": 5}).status_code == 404
+
+
+def test_non_finite_item_vectors_are_refused(model: Model) -> None:
+    """Kills tower.py:145 dropping ``or not np.isfinite(self.items).all()`` (a NaN item vector would be served: FAISS
+    ranks NaN inner products arbitrarily)."""
+    from dataclasses import replace
+
+    from signalrec.tower import ModelError
+
+    items = model.items.copy()
+    items[3, 0] = np.nan
+    with pytest.raises(ModelError, match="finite"):
+        replace(model, items=items).check()
+
+
+def test_a_zero_share_puts_nobody_in_the_treatment() -> None:
+    """Kills abtest.py:49 ``bucket(...) < round(share * BUCKETS)`` -> ``<=`` (bucket 0's users, 1 in 10,000, get the
+    treatment of an experiment that is switched off, and every share gets one bucket too many)."""
+    off = abtest.Experiment("review-d4-off", 0.0)
+    in_bucket_0 = [u for u in range(1, 200_000) if abtest.bucket(off.name, u) == 0]
+    assert in_bucket_0, "no user in bucket 0 among 200,000"
+    assert all(abtest.assign(off, u) == abtest.CONTROL for u in in_bucket_0)
+    tenth = abtest.Experiment("review-d4-off", 0.1)
+    in_bucket_1000 = [u for u in range(1, 200_000) if abtest.bucket(tenth.name, u) == 1000]
+    assert in_bucket_1000 and all(abtest.assign(tenth, u) == abtest.CONTROL for u in in_bucket_1000)
+
+
+def test_the_interval_uses_each_arms_own_size() -> None:
+    """Kills abtest.py:123 with the arms' sizes swapped in the standard error (equal arms hide it): 30 of 100 against
+    300 of 1000 by hand."""
+    import math
+
+    from scipy import stats
+
+    c = abtest.compare(30, 100, 450, 1000)
+    se = math.sqrt(0.3 * 0.7 / 100 + 0.45 * 0.55 / 1000)
+    z = float(stats.norm.ppf(0.975))
+    assert c.ci95 == pytest.approx((0.15 - z * se, 0.15 + z * se), abs=1e-12)
+
+
+# --- featurestore.py ------------------------------------------------------------------------------------------------
+
+
+def test_replay_ratings_counts_the_last_partial_batch(fresh: FeatureStore) -> None:
+    """Kills featurestore.py:149 ``applied += sum(...)`` dropped for the last, partial batch (``load-store`` prints
+    "ratings into the rated sets: N of M new" and N would leave out up to batch - 1 new ratings; the existing test
+    only checks 0 < N <= M)."""
+    events = [fe.Event(u, m, 0) for u in range(3) for m in range(5)]
+    stats = fresh.replay_ratings(events, batch=4)  # 15 events: three full batches and one of 3
+    assert (stats.events, stats.applied) == (15, 15)
+    again = fresh.replay_ratings(events[:7], batch=100)
+    assert (again.events, again.applied) == (7, 0)

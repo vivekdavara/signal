@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -192,7 +193,7 @@ def test_namespaces_are_separate_and_clear_removes_only_its_own(
         assert store.user(1).seen.tolist() == [0]
         assert other.user(1).seen.tolist() == [1]
         assert catalogue.movie_genres[0]  # so the event writes a genres hash
-        assert store.clear() == 5  # recent, seen, genres, stats, popularity
+        assert store.clear() == 6  # recent, seen, genres, stats, popularity, rated (day 4)
         assert other.user(1).seen.tolist() == [1]
     finally:
         other.clear()
@@ -256,3 +257,118 @@ def test_ranker_features_from_redis_equal_offline_ones_bit_for_bit(prepared: Pre
         a = rk.candidate_features(offline_users[u], candidates, scores, offline_popularity, context)
         b = rk.candidate_features(store.user(u), candidates, scores, online_popularity, context)
         assert np.array_equal(a, b), u
+
+
+# --- the rated set and the request path's reads (day 4) ---------------------------------------------------------
+
+
+def test_a_positive_is_also_rated(store: FeatureStore) -> None:
+    assert store.record(fe.Event(4, 7, 100))
+    features, rated = store.serving_view(4)
+    assert rated.tolist() == [7]
+    assert features.seen.tolist() == [7]
+
+
+def test_a_rating_that_is_not_a_positive_changes_no_feature(store: FeatureStore, catalogue: fe.Catalogue) -> None:
+    store.record(fe.Event(2, 3, 100))
+    before = store.user(2)
+    popularity = store.popularity()
+    assert store.record_rating(fe.Event(2, 11, 101))
+    assert not store.record_rating(fe.Event(2, 11, 102))  # already rated: a no-op
+    assert store.user(2) == before
+    np.testing.assert_array_equal(store.popularity(), popularity)
+    assert store.serving_view(2)[1].tolist() == [3, 11]
+    # A later positive on a movie the user had rated lower still counts as a positive, once.
+    assert store.record(fe.Event(2, 11, 103))
+    assert store.user(2).seen.tolist() == [3, 11]
+    assert store.serving_view(2)[1].tolist() == [3, 11]
+    assert not store.record(fe.Event(2, 11, 104))
+
+
+def test_bad_ratings_are_refused(store: FeatureStore, catalogue: fe.Catalogue) -> None:
+    for event in (fe.Event(1, catalogue.n_items, 0), fe.Event(-1, 0, 0), fe.Event(True, 0, 0)):
+        with pytest.raises(ValueError):
+            store.record_rating(event)
+    with pytest.raises(ValueError):
+        store.replay_ratings([fe.Event(1, 0, 0), fe.Event(1, -5, 0)])
+    assert store.client.keys(f"{store.namespace}:*") == []  # refused before its batch was sent
+
+
+def test_the_serving_view_is_one_transaction(store: FeatureStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    store.record(fe.Event(1, 2, 10))
+    store.record_rating(fe.Event(1, 5, 11))
+    seen: list[bool] = []
+    real = store.client.pipeline
+
+    def spy(transaction: bool = True, shard_hint: object = None) -> object:
+        seen.append(transaction)
+        return real(transaction=transaction, shard_hint=shard_hint)
+
+    monkeypatch.setattr(store.client, "pipeline", spy)
+    features, rated = store.serving_view(1)
+    assert seen == [True]
+    assert features == store.user(1)
+    assert features.seen.tolist() == [2]
+    assert rated.tolist() == [2, 5]
+
+
+def test_a_serving_view_of_a_user_with_nothing(store: FeatureStore, catalogue: fe.Catalogue) -> None:
+    features, rated = store.serving_view(42)
+    assert features == fe.user_features(np.empty(0, dtype=np.int64), catalogue)
+    assert rated.tolist() == []
+
+
+def test_a_foreign_value_in_the_rated_set_is_an_error(store: FeatureStore, catalogue: fe.Catalogue) -> None:
+    store.client.sadd(f"{store.namespace}:u:1:rated", catalogue.n_items)
+    with pytest.raises(FeatureStoreError, match="outside the catalogue"):
+        store.serving_view(1)
+    store.client.delete(f"{store.namespace}:u:1:rated")
+    store.client.set(f"{store.namespace}:u:1:rated", "x")
+    with pytest.raises(FeatureStoreError):
+        store.serving_view(1)
+
+
+def test_popularity_of_the_candidates_equals_the_whole_hash(store: FeatureStore, prepared: Prepared) -> None:
+    store.replay(fe.events(prepared, include_val=True))
+    everything = store.popularity()
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        movies = rng.choice(prepared.n_items, size=int(rng.integers(0, 40)), replace=False).astype(np.int64)
+        np.testing.assert_array_equal(store.popularity_of(movies), everything[movies])
+    never = np.flatnonzero(everything == 0)
+    if len(never):
+        assert store.popularity_of(never[:3]).tolist() == [0] * len(never[:3])
+    with pytest.raises(ValueError, match="outside the catalogue"):
+        store.popularity_of(np.array([0, prepared.n_items], dtype=np.int64))
+    store.client.hset(f"{store.namespace}:popularity", "0", "-3")
+    with pytest.raises(FeatureStoreError):
+        store.popularity_of(np.array([0], dtype=np.int64))
+
+
+def test_rated_events_stop_before_each_users_test_movie(tmp_path: Path) -> None:
+    raw = synthetic.write(tmp_path / "raw", n_users=60, n_items=90)
+    dataset = movielens.load("synthetic", raw)
+    p = prepare.prepare(dataset, prepare.Params())
+    events = fe.rated_events(p, dataset.ratings)
+    keys = [(e.time, e.movie, e.user) for e in events]
+    assert keys == sorted(keys)
+    by_user: dict[int, set[int]] = {}
+    for e in events:
+        assert e.time < p.test_times[e.user]
+        by_user.setdefault(e.user, set()).add(e.movie)
+    # Brute force from the raw rows.
+    r = dataset.ratings
+    want: dict[int, set[int]] = {}
+    user_of = {int(raw_id): u for u, raw_id in enumerate(p.user_raw_ids.tolist())}
+    item_of = {int(raw_id): i for i, raw_id in enumerate(p.item_raw_ids.tolist())}
+    lower = 0
+    for raw_u, raw_i, rating, t in zip(
+        r.users.tolist(), r.items.tolist(), r.ratings.tolist(), r.times.tolist(), strict=True
+    ):
+        if raw_u in user_of and raw_i in item_of and t < p.test_times[user_of[raw_u]]:
+            want.setdefault(user_of[raw_u], set()).add(item_of[raw_i])
+            lower += rating < 4
+    assert by_user == want
+    assert lower > 0  # the synthetic data has ratings below 4, so the set is more than the positives
+    for u in range(p.n_users):
+        assert int(p.test_items[u]) not in by_user.get(u, set())

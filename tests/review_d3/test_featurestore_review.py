@@ -60,7 +60,7 @@ def test_clear_never_deletes_another_namespaces_keys(
     """
     assert store.record(fe.Event(1, 1, 10))
     before = sorted(client.scan_iter(match=f"{store.namespace}:*"))
-    assert len(before) == 5
+    assert len(before) == 6  # day 4 added the rated set
     try:
         other = FeatureStore(client, CATALOGUE, namespace=f"{prefix}{glob}")
     except ValueError:

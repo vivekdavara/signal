@@ -6,6 +6,8 @@ Keys, under a namespace (``signal`` by default; the tests use a fresh one each):
 - ``<ns>:u:<user>:seen``: a set of every movie they liked (the history filter).
 - ``<ns>:u:<user>:genres``: a hash, genre index → positives.
 - ``<ns>:u:<user>:stats``: a hash with ``positives``, ``year_sum`` and ``year_count``.
+- ``<ns>:u:<user>:rated``: a set of every movie they rated, liked or not (day 4: serving never recommends a movie the
+  user has rated; ``seen`` holds positives only, because the processed data keeps only positives).
 - ``<ns>:popularity``: a hash, movie index → positives.
 
 An event is applied by one Lua script, so it is atomic (a reader sees all of an event's updates or none) and
@@ -37,7 +39,8 @@ DEFAULT_NAMESPACE = "signal"
 _NAMESPACE = re.compile(r"[A-Za-z0-9_-]+")
 INT64_MAX = 2**63 - 1
 
-# KEYS: recent, seen, genres, stats, popularity. ARGV: movie, recent cap, year (or -1), genre indices...
+# KEYS: recent, seen, genres, stats, popularity, rated. ARGV: movie, recent cap, year (or -1), genre indices...
+# A positive is also a rating, so it joins ``rated`` in the same script (day 4).
 _RECORD = """
 if redis.call('SADD', KEYS[2], ARGV[1]) == 0 then
   return 0
@@ -53,6 +56,7 @@ if tonumber(ARGV[3]) >= 0 then
   redis.call('HINCRBY', KEYS[4], 'year_count', 1)
 end
 redis.call('HINCRBY', KEYS[5], ARGV[1], 1)
+redis.call('SADD', KEYS[6], ARGV[1])
 return 1
 """
 
@@ -90,6 +94,9 @@ class FeatureStore:
         base = f"{self.namespace}:u:{user}"
         return [f"{base}:recent", f"{base}:seen", f"{base}:genres", f"{base}:stats"]
 
+    def _rated_key(self, user: int) -> str:
+        return f"{self.namespace}:u:{user}:rated"
+
     @property
     def _popularity_key(self) -> str:
         return f"{self.namespace}:popularity"
@@ -106,7 +113,7 @@ class FeatureStore:
         if event.user < 0:
             raise ValueError(f"user {event.user} is negative")
         year = int(self.catalogue.years[event.movie])
-        keys = [*self._user_keys(int(event.user)), self._popularity_key]
+        keys = [*self._user_keys(int(event.user)), self._popularity_key, self._rated_key(int(event.user))]
         return keys, [
             int(event.movie),
             self.recent,
@@ -118,6 +125,29 @@ class FeatureStore:
         """Apply one event; False if it was already applied (a duplicate)."""
         keys, args = self._args(event)
         return bool(self._record(keys=keys, args=args))
+
+    def record_rating(self, event: Event) -> bool:
+        """A rating that is not a positive: the movie joins the user's ``rated`` set only (no feature changes).
+        False if it was already there."""
+        keys, _ = self._args(event)
+        return bool(self.client.sadd(keys[5], int(event.movie)))
+
+    def replay_ratings(self, events: Iterable[Event], batch: int = 1000) -> ReplayStats:
+        """``record_rating`` for each event, ``batch`` per round trip; as idempotent as ``replay``."""
+        t0 = time.perf_counter()
+        total = applied = pending = 0
+        pipe = self.client.pipeline(transaction=False)
+        for event in events:
+            keys, _ = self._args(event)
+            pipe.sadd(keys[5], int(event.movie))
+            pending += 1
+            total += 1
+            if pending == batch:
+                applied += sum(int(r) for r in pipe.execute())
+                pending = 0
+        if pending:
+            applied += sum(int(r) for r in pipe.execute())
+        return ReplayStats(total, applied, time.perf_counter() - t0)
 
     def replay(self, events: Iterable[Event], batch: int = 1000) -> ReplayStats:
         """Apply events in order, ``batch`` scripts per round trip (a pipeline, not a transaction: each script is
@@ -144,6 +174,15 @@ class FeatureStore:
 
     def user(self, user: int) -> UserFeatures:
         """One user's features (all zeros and empty for a user with no events)."""
+        return self._read(user, with_rated=False)[0]
+
+    def serving_view(self, user: int) -> tuple[UserFeatures, IntArray]:
+        """One user's features and every movie they rated (sorted), from one MULTI/EXEC: what a request reads."""
+        features, rated = self._read(user, with_rated=True)
+        assert rated is not None
+        return features, rated
+
+    def _read(self, user: int, with_rated: bool) -> tuple[UserFeatures, IntArray | None]:
         # As for events: user(3.0) would read u:3.0, not user 3's keys (review round 2 of day 3).
         if isinstance(user, bool) or not isinstance(user, int | np.integer) or user < 0:
             raise ValueError(f"user must be an integer >= 0, got {user!r}")
@@ -154,10 +193,13 @@ class FeatureStore:
         pipe.smembers(seen_key)
         pipe.hgetall(genres_key)
         pipe.hgetall(stats_key)
+        if with_rated:
+            pipe.smembers(self._rated_key(user))
         try:
-            recent_raw, seen_raw, genres_raw, stats_raw = pipe.execute()
+            replies = pipe.execute()
         except redis.ResponseError as exc:  # WRONGTYPE: a key holds another type
             raise FeatureStoreError(f"user {user}: {exc}") from None
+        recent_raw, seen_raw, genres_raw, stats_raw = replies[:4]
         n_genres = len(self.catalogue.genre_names)
         genre_counts = np.zeros(n_genres, dtype=np.int64)
         for genre, count in genres_raw.items():
@@ -171,7 +213,10 @@ class FeatureStore:
             raise FeatureStoreError(f"user {user}: unexpected stats fields {sorted(unknown)}")
         recent = np.array([self._movie(m, user) for m in recent_raw], dtype=np.int64)
         seen = np.array(sorted(self._movie(m, user) for m in seen_raw), dtype=np.int64)
-        return UserFeatures(
+        rated = None
+        if with_rated:
+            rated = np.array(sorted(self._movie(m, user) for m in replies[4]), dtype=np.int64)
+        features = UserFeatures(
             recent=recent,
             seen=seen,
             genre_counts=genre_counts,
@@ -179,6 +224,26 @@ class FeatureStore:
             year_sum=stats.get("year_sum", 0),
             year_count=stats.get("year_count", 0),
         )
+        return features, rated
+
+    def popularity_of(self, movies: IntArray) -> IntArray:
+        """Positives for each of ``movies`` (one HMGET; 0 for a movie nobody has liked): what a request reads, instead
+        of the whole hash (4.8 ms on ml-1m, day 3)."""
+        ids = [int(m) for m in np.asarray(movies, dtype=np.int64)]
+        for m in ids:
+            if not 0 <= m < self.catalogue.n_items:
+                raise ValueError(f"movie {m} is outside the catalogue of {self.catalogue.n_items}")
+        out = np.zeros(len(ids), dtype=np.int64)
+        if not ids:
+            return out
+        try:
+            raw = self.client.hmget(self._popularity_key, ids)
+        except redis.ResponseError as exc:
+            raise FeatureStoreError(f"popularity: {exc}") from None
+        for i, count in enumerate(raw):
+            if count is not None:
+                out[i] = self._int(count, "a popularity count")
+        return out
 
     def popularity(self) -> IntArray:
         """Positives per movie, as an array over the catalogue."""

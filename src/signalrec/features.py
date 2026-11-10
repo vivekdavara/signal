@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import numpy as np
 import numpy.typing as npt
 
+from signalrec.movielens import Ratings
 from signalrec.prepare import Prepared
 
 IntArray = npt.NDArray[np.int64]
@@ -144,3 +145,27 @@ def offline(p: Prepared, include_val: bool, recent: int = RECENT) -> tuple[list[
     every = np.concatenate(sequences) if sequences else np.empty(0, dtype=np.int64)
     popularity = np.bincount(every, minlength=p.n_items).astype(np.int64)
     return [user_features(s, catalogue, recent) for s in sequences], popularity
+
+
+def rated_events(p: Prepared, ratings: Ratings) -> list[Event]:
+    """Every rating, liked or not, that serving's filter should know about as of just before each user's test movie
+    (day 4): the raw ratings of the prepared users on catalogue movies, strictly earlier than the user's test time, by
+    (time, movie, user).
+
+    Strictly earlier, so the test movie itself (and anything rated in the same second as it or later) is never in the
+    set and an evaluation through the serving path can still find it. The training and validation positives are
+    rated too; the replay of positives adds them (``FeatureStore.record``), so the union is what serving excludes.
+    """
+    u_at = np.searchsorted(p.user_raw_ids, ratings.users)
+    i_at = np.searchsorted(p.item_raw_ids, ratings.items)
+    known = (u_at < p.n_users) & (i_at < p.n_items)
+    known[known] &= (p.user_raw_ids[u_at[known]] == ratings.users[known]) & (
+        p.item_raw_ids[i_at[known]] == ratings.items[known]
+    )
+    u = u_at[known].astype(np.int64)
+    i = i_at[known].astype(np.int64)
+    t = ratings.times[known].astype(np.int64)
+    before = t < p.test_times[u]
+    u, i, t = u[before], i[before], t[before]
+    order = np.lexsort((u, i, t))
+    return [Event(int(u[k]), int(i[k]), int(t[k])) for k in order]

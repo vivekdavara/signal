@@ -416,7 +416,8 @@ day 4 reads only the candidates' counts or caches it.
 ## Results (day 4): serving, latency, A/B testing
 
 Measured on 2026-11-10 (Apple M3, 4 performance + 4 efficiency cores, macOS 26.6, Python 3.11.12, faiss-cpu 1.15.1,
-redis-py 8.1.0 with hiredis 3.5.0, Redis 8.8.0 on loopback, FastAPI 0.162.4, uvicorn 0.54.0), on AC power. Every number
+redis-py 8.1.0 with hiredis 3.5.0, Redis 8.8.0 on loopback, FastAPI 0.162.4, uvicorn 0.54.0), on AC until 15:54
+and on battery after (`pmset -g log`), the latency run included. Every number
 is in the JSON named next to it.
 
 ### Does serving compute what was evaluated? (`python scripts/serving_check.py ml-1m`, `results/ml-1m/serving-check.json`)
@@ -439,7 +440,7 @@ deployed system.
 
 ### Latency (`python scripts/bench_serving.py ml-1m --rates 100,200,400,600,800,1000 --concurrency 1,4,16`, `results/ml-1m/serving-bench.json`)
 
-16:22-16:25, on AC, no sleep, load average 2.0 before and 2.1 after, nothing else above 15% CPU (checked before and
+16:22-16:25, on battery (unplugged at 15:54), no sleep, load average 2.0 before and 2.1 after, nothing else above 15% CPU (checked before and
 after). Client and server on the same laptop over loopback; one uvicorn process with sync endpoints on its thread pool;
 k = 10 from 200 candidates; the exact FAISS index. **In-process**, every user once after 1,000 untimed requests:
 

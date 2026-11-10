@@ -46,6 +46,14 @@ jobs:
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    services:
+      # Day 4's serving chain on real data needs the feature store.
+      redis:
+        image: redis:8
+        ports:
+          - 6383:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
     env:
       # The real-data tests fail instead of skipping when this dataset is missing.
       SIGNALREC_REQUIRE_DATA: ml-latest-small
@@ -95,3 +103,19 @@ jobs:
             --out "$RUNNER_TEMP/ranking.json"
           python scripts/bench_retrieval.py ml-latest-small --from "$RUNNER_TEMP/twotower.json" \
             --synthetic-items 20000 --synthetic-queries 200 --out "$RUNNER_TEMP/retrieval.json"
+      # Day 4 on real data: the served model from this run's own two-tower and ranker results, the store, and the
+      # serving check, which fails unless the request path gives this run's ranking.json test metrics back exactly
+      # (CI's numbers, on CI's CPU: the check compares the run with itself, not with the committed files). Then the
+      # latency benchmark and the A/B simulation briefly, to show they run; their numbers aren't kept.
+      - name: Serving smoke run
+        run: |
+          signalrec export ml-latest-small --from "$RUNNER_TEMP/twotower.json" --ranking "$RUNNER_TEMP/ranking.json" \
+            --out "$RUNNER_TEMP/model"
+          signalrec load-store ml-latest-small --model "$RUNNER_TEMP/model" --fresh
+          python scripts/serving_check.py ml-latest-small --model "$RUNNER_TEMP/model" \
+            --ranking "$RUNNER_TEMP/ranking.json" --out "$RUNNER_TEMP/serving-check.json"
+          python scripts/bench_serving.py ml-latest-small --model "$RUNNER_TEMP/model" --lead-in-requests 50 \
+            --seconds 1 --lead-in 0.5 --rates 50 --concurrency 1,2 --client-processes 2 \
+            --out "$RUNNER_TEMP/serving-bench.json"
+          python scripts/ab_simulate.py ml-latest-small --model "$RUNNER_TEMP/model" --experiments 50 \
+            --out "$RUNNER_TEMP/abtest.json"

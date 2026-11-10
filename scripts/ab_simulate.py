@@ -66,13 +66,15 @@ def analyse(
     true_c, true_t = float(p_c.mean()), float(p_t.mean())
     rng = np.random.default_rng(SEED)
     one = abtest.run(abtest.Experiment("ranker-v1", 0.5), raw_users, p_c, p_t, rng)
-    needed = abtest.users_per_arm(true_c, true_t)
+    # Arms that put every next movie in the same place have no difference to detect: no test size is enough.
+    needed = abtest.users_per_arm(true_c, true_t) if true_t != true_c else None
     half = len(raw_users) // 2
     checks: dict[str, dict[str, Any]] = {
         "A/A at the dataset's size": abtest.simulate(p_c, p_c, half, experiments, rng),
         "A/B at the dataset's size": abtest.simulate(p_c, p_t, half, experiments, rng),
-        "A/B at the computed size": abtest.simulate(p_c, p_t, needed, experiments, rng),
     }
+    if needed is not None:
+        checks["A/B at the computed size"] = abtest.simulate(p_c, p_t, needed, experiments, rng)
     for row in checks.values():
         for key in ("share significant", "share of intervals covering the true difference"):
             row[f"{key}, Monte Carlo ci95"] = share_interval(row[key], experiments)
@@ -80,7 +82,7 @@ def analyse(
         "click model (SYNTHETIC)": {"p_target": model.p_target, "p_other": model.p_other, "k": model.k},
         "true conversion": {"control": true_c, "treatment": true_t},
         "true difference": true_t - true_c,
-        "true relative lift": (true_t - true_c) / true_c,
+        "true relative lift": (true_t - true_c) / true_c if true_c else None,
         "one experiment (ranker-v1, 50/50, the dataset's users)": {
             "control": one.control,
             "treatment": one.treatment,
@@ -135,13 +137,17 @@ def main(argv: list[str] | None = None) -> int:
         cm = row["click model (SYNTHETIC)"]
         one = row["one experiment (ranker-v1, 50/50, the dataset's users)"]
         aa = row["checks"]["A/A at the dataset's size"]
-        sized = row["checks"]["A/B at the computed size"]
         truth = row["true conversion"]
+        needed = row["users per arm for 80% power at alpha 0.05"]
+        if needed is None:
+            print(f"click model p_target={cm['p_target']} p_other={cm['p_other']}: the arms don't differ")
+            continue
+        sized = row["checks"]["A/B at the computed size"]
         print(
             f"click model p_target={cm['p_target']} p_other={cm['p_other']}: true {truth['control']:.4f} -> "
-            f"{truth['treatment']:.4f} ({row['true difference']:+.4f}, {row['true relative lift']:+.1%}); "
+            f"{truth['treatment']:.4f} ({row['true difference']:+.4f}, {row['true relative lift'] or 0:+.1%}); "
             f"one experiment {one['difference']:+.4f} [{one['ci95'][0]:+.4f}, {one['ci95'][1]:+.4f}] "
-            f"p={one['p_value']:.3f}; needs {row['users per arm for 80% power at alpha 0.05']:,} per arm; "
+            f"p={one['p_value']:.3f}; needs {needed:,} per arm; "
             f"A/A significant {aa['share significant']:.3f}, power at that size {sized['share significant']:.3f}, "
             f"coverage {sized['share of intervals covering the true difference']:.3f}"
         )

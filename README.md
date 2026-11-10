@@ -659,6 +659,31 @@ bound, the bool refusal dropped) are killed. Its suspicion that the feature abla
 was chosen on the selection users) was right: chosen alike (`73d3c67`), no feature's drop excludes zero. Re-run after
 the fixes, the ranker's own results are identical and the benchmark's recalls unchanged.
 
+## Review of day 4
+
+One review agent in its own worktree at `c4b266d` (all of day 4's code), with a correctness brief: failing tests in
+`tests/review_d4/` and a mutation run; about 18 minutes. Ten defects, all fixed (`fcf2007`):
+
+- **Skew**: a model reading more recent positives than the store keeps (`--histories 100` against the store's 50)
+  was served from half its history without a word; the Recommender refuses it.
+- **Atomicity**: the event script's new `SADD rated` came last, and a Lua script isn't rolled back on an error, so a
+  rated key of another type kept the rest of the event and made every retry a no-op. Every key's type is checked
+  before the first write.
+- **Model files**: only `model.npz` was hashed, while `model.json` carries the catalogue, the titles and
+  `max_history`; `max_history` "4", 4.9 or `true` was coerced; and the arrays were read in a second read of the file,
+  not from the bytes hashed. Format 2 hashes model.json's own fields, types are strict, arrays come from the hashed
+  bytes.
+- **API**: `/recommendations/1_0` served user 10 and `k=+5`, `5.0`, `" 5"` were accepted (FastAPI's lax integers);
+  a NaN or Infinity rating made the 422 body unwritable, a 500; `/health` named the dataset, never the model.
+- **A/B**: the click model divided by the target slot's no-click factor, 0/0 = NaN with `p_other = 1`.
+
+Mutants: 58, all importable; 41 killed, 17 survived, 16 meaningful (one equivalent), each killed by
+`tests/review_d4/test_survivors_d4.py`, among them seen positives dropped from the default exclusion, share 0 putting
+bucket 0 in the treatment, the arms' sizes swapped in the standard error, `>=` as `>` for a positive rating, and in
+the benchmark the achieved rate divided over the lead-in, `sent = due` and early sends. Two of its suspicions were
+right and are fixed (`af6ce04`): failed open-loop requests were left out of the latency percentiles (they count now,
+at the time they failed), and `load-store` didn't check the prepared data's parameters against the model's.
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are

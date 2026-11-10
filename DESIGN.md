@@ -269,25 +269,30 @@ of two directories: a crash between the renames leaves the old one beside it und
   NumPy float32 (`UserTower`: the history table's mean over the last `max_history` positives, the residual MLP, the L2
   norm), the item vectors computed once, and the ranker `signalrec ranking` chose (its weights are in
   `ranking.json`; refused if that file ranked another two-tower configuration or dataset). Saved as
-  `models/<dataset>/model.npz` + `model.json` (configuration, provenance, the catalogue, the npz's SHA-256, checked
-  on load). Gitignored: it is derived from MovieLens, and ml-1m may not be redistributed. NumPy and PyTorch user
+  `models/<dataset>/model.npz` + `model.json` (configuration, provenance, the catalogue, the npz's SHA-256, and since
+  the review a SHA-256 of model.json's own fields: format 2; both checked on load, the arrays read from the bytes
+  hashed). Gitignored: it is derived from MovieLens, and ml-1m may not be redistributed. NumPy and PyTorch user
   vectors agree within 1e-6 on every synthetic user, and retrieval returns the same movies from either.
 - **The rated set** (`featurestore.py`, `features.rated_events`). `<ns>:u:<user>:rated`: the positive script adds
   to it, and a lower rating goes there alone (`record_rating`, one `SADD`: no feature changes). `load-store` replays
   the training and validation positives, then every raw rating of a prepared user on a catalogue movie **strictly
   before that user's test time**, so the store is the state just before each test movie and the test movie itself is
-  never filtered. On ml-1m: 568,342 positives, then 973,546 ratings of which 408,571 were not already positives.
+  never filtered. On ml-1m: 568,342 positives, then 973,546 ratings of which 408,571 were not already positives. The
+  event script checks every key's type before its first write (review: a Lua script isn't rolled back when a command
+  fails, and a wrong-typed rated key had kept half an event).
 - **The request path** (`serving.py`). Six timed stages: `serving_view` (features + rated set, one MULTI/EXEC), the
   NumPy user tower, FAISS (exact) excluding the rated set and any excluded genres **inside the search**, so k is met
   however much is filtered; the candidates' popularity by one HMGET (not the whole hash); the ranker; and a final
-  check that raises if anything excluded got through (a bug, never a silent drop). `exclude="liked"` excludes
+  check that raises if anything excluded got through (a bug, never a silent drop). A model whose `max_history` exceeds
+  the store's recent cap is refused (review). `exclude="liked"` excludes
   positives only, as the offline protocol does, so the two can be compared.
 - **Serving reproduces the offline test** (`scripts/serving_check.py`). Every ml-1m user through the request path
   with the protocol's filter gives exactly `ranking.json`'s test metrics (re-ranked and retrieved order, equal to
   1e-12), so what is served is what was evaluated. A synthetic test runs the same chain through the CLI.
 - **API** (`api.py`, `signalrec serve`, 127.0.0.1:8116). MovieLens ids in and out; unknown users and movies 404, a bad
-  k, genre or event body 422 (strict integers: `1.0`, `true` and `"1"` are refused), Redis down 503, foreign values in
-  Redis 500. `Server-Timing` carries each stage. `POST /events` sends a rating at or above the model's `min_rating`
+  k, genre or event body 422 (strict integers: `1.0`, `true` and `"1"` in bodies, and anything but digits in the path
+  and `k`, are refused; ratings must be finite; a 422 never echoes the input), Redis down 503, foreign values in Redis
+  500. `Server-Timing` carries each stage. `POST /events` sends a rating at or above the model's `min_rating`
   through the event script and a lower one to the rated set; both answer whether they applied, so retries are safe.
   Sync endpoints on uvicorn's thread pool, one process.
 - **FAISS threads don't matter here.** A one-query search runs on the calling thread: measured, it starts no OpenMP

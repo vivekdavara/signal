@@ -648,8 +648,6 @@ the fixes, the ranker's own results are identical and the benchmark's recalls un
 - **Exclusions inside the search, a check after ranking** (day 4). Rated movies and excluded genres are excluded by
   FAISS's selector, so k is always met when k eligible movies exist; the filter stage raises instead of dropping, so an
   exclusion bug can't hide.
-- **One FAISS thread per process** (day 4). Requests are single queries; parallelism comes from serving several at
-  once, and FAISS's 8 OpenMP threads per search oversubscribed the cores under load (measured below).
 - **Stateless hash assignment** (day 4). Every server computes the same arm from (experiment, user); no table to keep
   in sync, and a renamed experiment reshuffles independently.
 - **A simulator that checks its own statistics** (day 4). The click model is synthetic, so the lift it reports is too;
@@ -734,7 +732,7 @@ scripts/bench_serving.py     per-stage latency in-process; HTTP closed loop and 
 scripts/ab_simulate.py       a simulated A/B test of the ranker: lift, power analysis, the statistics checked
 results/<dataset>/{baselines,leakage,twotower,twotower-day2,leakage-twotower,ranking}.json,
 results/ml-1m/{recency-ablation,same-second,retrieval,featurestore}.json,
-results/ml-1m/{serving-check,serving-bench,serving-bench-faiss-8-threads,abtest}.json
+results/ml-1m/{serving-check,serving-bench,abtest}.json
 ```
 
 ## License

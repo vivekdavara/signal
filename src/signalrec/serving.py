@@ -4,10 +4,11 @@ Stages, each timed:
 
 1. **features**: the user's features and rated set from Redis, one MULTI/EXEC (``FeatureStore.serving_view``).
 2. **user tower**: their vector from the last ``max_history`` positives, in NumPy (``tower.UserTower``).
-3. **retrieve**: the best ``n_candidates`` movies by inner product (FAISS, exact by default), excluding inside the
-   search every movie the filter would remove: the ones the user rated (or, for the offline protocol's comparison,
-   only the ones they liked) and any excluded genres. Excluding in the search, not after, means a heavy user or a
-   wide genre filter still gets ``n_candidates`` eligible movies.
+3. **retrieve**: the best ``n_candidates`` movies by inner product (FAISS, exact by default; a one-query search runs
+   on the calling thread: measured on day 4, it starts no OpenMP worker whatever FAISS's thread setting), excluding
+   inside the search every movie the filter would remove: the ones the user rated (or, for the offline protocol's
+   comparison, only the ones they liked) and any excluded genres. Excluding in the search, not after, means a heavy
+   user or a wide genre filter still gets ``n_candidates`` eligible movies.
 4. **popularity**: the candidates' popularity from Redis, one HMGET.
 5. **rank**: the ranker's eight features and scores (``ranking.py``), candidates re-ordered by score; the control arm
    of an experiment skips the model and keeps the retrieved order.
@@ -39,11 +40,6 @@ Float64Array = npt.NDArray[np.float64]
 N_CANDIDATES = 200
 STAGES = ("features", "user tower", "retrieve", "popularity", "rank", "filter")
 EXCLUDE = ("rated", "liked")
-# FAISS's OpenMP threads for the process (None leaves them alone). A request searches one query, which gains nothing
-# from 8 threads, and concurrent requests each starting a parallel region oversubscribe the cores: measured on day 4,
-# with FAISS's default of 8 threads the server's own pipeline time at 16 concurrent requests was 9.3 ms (p50), and an
-# open loop at 600 requests/s collapsed to 341 served per second. Requests run in parallel instead.
-SEARCH_THREADS = 1
 
 
 @dataclass(frozen=True)
@@ -65,7 +61,6 @@ class Recommender:
         store: FeatureStore,
         n_candidates: int = N_CANDIDATES,
         index: rt.IndexSpec | None = None,
-        search_threads: int | None = SEARCH_THREADS,
     ) -> None:
         model.check()
         if type(n_candidates) is not int or n_candidates < 1:
@@ -76,8 +71,6 @@ class Recommender:
         self.store = store
         self.n_candidates = n_candidates
         self.retriever = rt.Retriever(model.items, index or rt.IndexSpec("flat"))
-        if search_threads is not None:
-            rt.set_threads(search_threads)
         self.context = rk.Context.build(model.catalogue, model.items)
         genre_of = {name: g for g, name in enumerate(model.catalogue.genre_names)}
         self._genre_index = genre_of

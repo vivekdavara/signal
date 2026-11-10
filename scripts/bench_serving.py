@@ -70,13 +70,6 @@ def percentile(values: Sequence[float], p: str) -> float:
     return ordered[max(rank, 1) - 1]
 
 
-def faiss_threads() -> int:
-    import faiss
-
-    n: int = faiss.omp_get_max_threads()
-    return n
-
-
 def summary_us(seconds: Sequence[float]) -> dict[str, float]:
     """p50/p95/p99/max in microseconds."""
     us = [s * 1e6 for s in seconds]
@@ -251,8 +244,8 @@ async def open_loop(
 #
 # One Python process running asyncio and httpx can't send much more than about 400 requests a second on time: measured
 # on day 4, its own lateness (sent - scheduled) was 0.18 ms at 400/s and 46 ms at 600/s, when it got 185/s out. So the
-# HTTP runs can split the load over --client-processes processes, each sending its share of one schedule. They share
-# the schedule's start through time.perf_counter, which is system-wide (mach_absolute_time on macOS, CLOCK_MONOTONIC on
+# HTTP runs split the load over --client-processes processes, each sending its share of one schedule. They share the
+# schedule's start through time.perf_counter, which is system-wide (mach_absolute_time on macOS, CLOCK_MONOTONIC on
 # Linux), and run in spawned processes started and warmed before anything is timed.
 
 
@@ -307,7 +300,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[bytes]:
     command = [sys.executable, "-m", "signalrec.cli", "serve", args.dataset, "--port", str(args.port)]
     if args.model:
         command += ["--model", str(args.model)]
-    command += ["--redis", args.redis, "--namespace", args.namespace, "--search-threads", str(args.search_threads)]
+    command += ["--redis", args.redis, "--namespace", args.namespace]
     proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -416,9 +409,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-connections", type=int, default=256, help="per client process")
     parser.add_argument("--timeout", type=float, default=10.0, help="seconds before a request counts as failed")
     parser.add_argument("--client-processes", type=int, default=4, help="processes sending the HTTP load (default 4)")
-    parser.add_argument(
-        "--search-threads", type=int, default=1, help="FAISS threads, here and in the server (0: FAISS's default)"
-    )
     parser.add_argument("--no-http", action="store_true", help="the in-process stages only")
     parser.add_argument("--trace", type=Path, help="write every timed open-loop request's due/sent/done times here")
     parser.add_argument("--out", type=Path, help="default: results/<dataset>/serving-bench.json")
@@ -431,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
     def recommender(parser: Any) -> Recommender:
         pool = redis.ConnectionPool.from_url(args.redis, parser_class=parser)
         store = FeatureStore(redis.Redis(connection_pool=pool), model.catalogue, args.namespace)
-        return Recommender(model, store, search_threads=args.search_threads or None)
+        return Recommender(model, store)
 
     rec = recommender(_HiredisParser)
 
@@ -442,7 +432,6 @@ def main(argv: list[str] | None = None) -> int:
         "dataset": args.dataset,
         "candidates": rec.n_candidates,
         "index": rec.retriever.spec.label(),
-        "FAISS threads": faiss_threads(),
     }
     result["stages, in-process"] = {}
     for name, parser_class in PARSERS.items():

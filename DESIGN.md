@@ -290,8 +290,10 @@ of two directories: a crash between the renames leaves the old one beside it und
   Redis 500. `Server-Timing` carries each stage. `POST /events` sends a rating at or above the model's `min_rating`
   through the event script and a lower one to the rated set; both answer whether they applied, so retries are safe.
   Sync endpoints on uvicorn's thread pool, one process.
-- **FAISS on one thread.** The Recommender sets FAISS's OpenMP threads to 1 (`--search-threads`): each request is one
-  query, and concurrent requests each opening an 8-thread parallel region oversubscribed the cores (measured: README).
+- **FAISS threads don't matter here.** A one-query search runs on the calling thread: measured, it starts no OpenMP
+  worker (the process stays at one OS thread) and costs the same CPU time (83-89 µs) with FAISS set to 1 or 8 threads.
+  An earlier commit (`212f6dc`) set one thread to fix a collapse under load; the collapse was another session's builds
+  sharing the machine, and the setting is gone.
 - **hiredis.** redis-py parses replies in Python unless its C parser is installed; `redis[hiredis]` is a dependency
   now (measured: README).
 - **Latency benchmark** (`scripts/bench_serving.py`). In-process stages for every user after an untimed lead-in, with

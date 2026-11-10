@@ -1,0 +1,252 @@
+{
+  "command": "python scripts/ab_simulate.py ml-1m",
+  "dataset": "ml-1m",
+  "SYNTHETIC": "the click model is synthetic; the users, their lists and the movie each watched next are real",
+  "arms": {
+    "control": "retrieved order (ranker skipped)",
+    "treatment": "re-ranked"
+  },
+  "users": 6034,
+  "next movie in the top 10 (share of users)": {
+    "control": 0.23699038780245277,
+    "treatment": 0.2504143188597945
+  },
+  "serving seconds (both arms, every user)": 10.950385332922451,
+  "click models": [
+    {
+      "click model (SYNTHETIC)": {
+        "p_target": 0.9,
+        "p_other": 0.02,
+        "k": 10
+      },
+      "true conversion": {
+        "control": 0.19626740115215266,
+        "treatment": 0.20256441438841222
+      },
+      "true difference": 0.006297013236259558,
+      "true relative lift": 0.03208384682985594,
+      "one experiment (ranker-v1, 50/50, the dataset's users)": {
+        "control": 0.192964824120603,
+        "treatment": 0.20990488684814693,
+        "users": {
+          "control": 2985,
+          "treatment": 3049
+        },
+        "difference": 0.01694006272754392,
+        "ci95": [
+          -0.0032925990557549807,
+          0.03717272451084282
+        ],
+        "p_value": 0.1009859206390825
+      },
+      "users per arm for 80% power at alpha 0.05": 63199,
+      "checks": {
+        "A/A at the dataset's size": {
+          "experiments": 1000,
+          "users per arm": 3017,
+          "true difference": 0.0,
+          "share significant": 0.056,
+          "share of intervals covering the true difference": 0.944,
+          "mean measured difference": -0.00021146834603911197,
+          "share significant, Monte Carlo ci95": [
+            0.04174930379244579,
+            0.07025069620755421
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9297493037924457,
+            0.9582506962075542
+          ]
+        },
+        "A/B at the dataset's size": {
+          "experiments": 1000,
+          "users per arm": 3017,
+          "true difference": 0.006297013236259558,
+          "share significant": 0.103,
+          "share of intervals covering the true difference": 0.946,
+          "mean measured difference": 0.006671859463042752,
+          "share significant, Monte Carlo ci95": [
+            0.08416043350817222,
+            0.12183956649182777
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9319912779169547,
+            0.9600087220830452
+          ]
+        },
+        "A/B at the computed size": {
+          "experiments": 1000,
+          "users per arm": 63199,
+          "true difference": 0.006297013236259558,
+          "share significant": 0.788,
+          "share of intervals covering the true difference": 0.954,
+          "mean measured difference": 0.006243975379357276,
+          "share significant, Monte Carlo ci95": [
+            0.7626669715667471,
+            0.813333028433253
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9410159800369838,
+            0.9669840199630161
+          ]
+        }
+      }
+    },
+    {
+      "click model (SYNTHETIC)": {
+        "p_target": 0.5,
+        "p_other": 0.02,
+        "k": 10
+      },
+      "true conversion": {
+        "control": 0.14674782381869653,
+        "treatment": 0.15018255831120175
+      },
+      "true difference": 0.003434734492505226,
+      "true relative lift": 0.02340569286225845,
+      "one experiment (ranker-v1, 50/50, the dataset's users)": {
+        "control": 0.15175879396984926,
+        "treatment": 0.15250901935060676,
+        "users": {
+          "control": 2985,
+          "treatment": 3049
+        },
+        "difference": 0.0007502253807575021,
+        "ci95": [
+          -0.01737450730124908,
+          0.018874958062764083
+        ],
+        "p_value": 0.935341954753695
+      },
+      "users per arm for 80% power at alpha 0.05": 168217,
+      "checks": {
+        "A/A at the dataset's size": {
+          "experiments": 1000,
+          "users per arm": 3017,
+          "true difference": 0.0,
+          "share significant": 0.053,
+          "share of intervals covering the true difference": 0.947,
+          "mean measured difference": -0.00033012926748425504,
+          "share significant, Monte Carlo ci95": [
+            0.039114261071156495,
+            0.0668857389288435
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9331142610711565,
+            0.9608857389288434
+          ]
+        },
+        "A/B at the dataset's size": {
+          "experiments": 1000,
+          "users per arm": 3017,
+          "true difference": 0.003434734492505226,
+          "share significant": 0.062,
+          "share of intervals covering the true difference": 0.946,
+          "mean measured difference": 0.003629764666887635,
+          "share significant, Monte Carlo ci95": [
+            0.047053024065049145,
+            0.07694697593495085
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9319912779169547,
+            0.9600087220830452
+          ]
+        },
+        "A/B at the computed size": {
+          "experiments": 1000,
+          "users per arm": 168217,
+          "true difference": 0.003434734492505226,
+          "share significant": 0.79,
+          "share of intervals covering the true difference": 0.943,
+          "mean measured difference": 0.0034339276054144324,
+          "share significant, Monte Carlo ci95": [
+            0.7647547739166393,
+            0.8152452260833608
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9286302455970883,
+            0.9573697544029116
+          ]
+        }
+      }
+    },
+    {
+      "click model (SYNTHETIC)": {
+        "p_target": 0.9,
+        "p_other": 0.1,
+        "k": 10
+      },
+      "true conversion": {
+        "control": 0.4454583166244985,
+        "treatment": 0.44962662906048473
+      },
+      "true difference": 0.0041683124359862544,
+      "true relative lift": 0.009357356862415381,
+      "one experiment (ranker-v1, 50/50, the dataset's users)": {
+        "control": 0.4452261306532663,
+        "treatment": 0.4476877664808134,
+        "users": {
+          "control": 2985,
+          "treatment": 3049
+        },
+        "difference": 0.0024616358275470485,
+        "ci95": [
+          -0.022626176926474385,
+          0.02754944858156848
+        ],
+        "p_value": 0.8474981925913305
+      },
+      "users per arm for 80% power at alpha 0.05": 223380,
+      "checks": {
+        "A/A at the dataset's size": {
+          "experiments": 1000,
+          "users per arm": 3017,
+          "true difference": 0.0,
+          "share significant": 0.05,
+          "share of intervals covering the true difference": 0.95,
+          "mean measured difference": -0.0002943321179980106,
+          "share significant, Monte Carlo ci95": [
+            0.036491632222951584,
+            0.06350836777704842
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9364916322229515,
+            0.9635083677770484
+          ]
+        },
+        "A/B at the dataset's size": {
+          "experiments": 1000,
+          "users per arm": 3017,
+          "true difference": 0.0041683124359862544,
+          "share significant": 0.064,
+          "share of intervals covering the true difference": 0.958,
+          "mean measured difference": 0.0043430560159098425,
+          "share significant, Monte Carlo ci95": [
+            0.04883005582080145,
+            0.07916994417919855
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9455673567733969,
+            0.970432643226603
+          ]
+        },
+        "A/B at the computed size": {
+          "experiments": 1000,
+          "users per arm": 223380,
+          "true difference": 0.0041683124359862544,
+          "share significant": 0.814,
+          "share of intervals covering the true difference": 0.957,
+          "mean measured difference": 0.004178350792371743,
+          "share significant, Monte Carlo ci95": [
+            0.7898829187835674,
+            0.8381170812164325
+          ],
+          "share of intervals covering the true difference, Monte Carlo ci95": [
+            0.9444267871409094,
+            0.9695732128590905
+          ]
+        }
+      }
+    }
+  ],
+  "seed": 0
+}

@@ -41,7 +41,16 @@ INT64_MAX = 2**63 - 1
 
 # KEYS: recent, seen, genres, stats, popularity, rated. ARGV: movie, recent cap, year (or -1), genre indices...
 # A positive is also a rating, so it joins ``rated`` in the same script (day 4).
+# A script is atomic for other clients but not rolled back if a command fails halfway, so every key's type is checked
+# before the first write (review of day 4: a rated key of another type failed the last SADD and kept the rest).
 _RECORD = """
+local expected = {'list', 'set', 'hash', 'hash', 'hash', 'set'}
+for i = 1, 6 do
+  local t = redis.call('TYPE', KEYS[i])['ok']
+  if t ~= 'none' and t ~= expected[i] then
+    return redis.error_reply('WRONGTYPE ' .. KEYS[i] .. ' holds a ' .. t .. ', not a ' .. expected[i])
+  end
+end
 if redis.call('SADD', KEYS[2], ARGV[1]) == 0 then
   return 0
 end
@@ -122,15 +131,24 @@ class FeatureStore:
         ]
 
     def record(self, event: Event) -> bool:
-        """Apply one event; False if it was already applied (a duplicate)."""
+        """Apply one event; False if it was already applied (a duplicate). A key of the wrong type is a
+        ``FeatureStoreError`` and nothing is written."""
         keys, args = self._args(event)
-        return bool(self._record(keys=keys, args=args))
+        try:
+            return bool(self._record(keys=keys, args=args))
+        except redis.ResponseError as exc:
+            if "WRONGTYPE" in str(exc):
+                raise FeatureStoreError(f"user {event.user}: {exc}") from None
+            raise
 
     def record_rating(self, event: Event) -> bool:
         """A rating that is not a positive: the movie joins the user's ``rated`` set only (no feature changes).
         False if it was already there."""
         keys, _ = self._args(event)
-        return bool(self.client.sadd(keys[5], int(event.movie)))
+        try:
+            return bool(self.client.sadd(keys[5], int(event.movie)))
+        except redis.ResponseError as exc:  # one command: it fails whole
+            raise FeatureStoreError(f"user {event.user}: {exc}") from None
 
     def replay_ratings(self, events: Iterable[Event], batch: int = 1000) -> ReplayStats:
         """``record_rating`` for each event, ``batch`` per round trip; as idempotent as ``replay``."""

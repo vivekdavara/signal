@@ -19,7 +19,9 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 import redis
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Path, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt
 
 from signalrec import abtest
@@ -28,6 +30,9 @@ from signalrec.featurestore import FeatureStoreError
 from signalrec.serving import Recommendation, Recommender
 
 MAX_K = 100
+# Path and query integers as digits only: FastAPI's lax int parsing read "1_0", "+5", " 5" and "5.0" as numbers, so
+# /recommendations/1_0 served user 10 (review of day 4). Up to 18 digits: always an int64.
+DIGITS = r"^[0-9]{1,18}$"
 
 
 class EventIn(BaseModel):
@@ -35,7 +40,7 @@ class EventIn(BaseModel):
 
     user: StrictInt = Field(ge=1)
     movie: StrictInt = Field(ge=1)
-    rating: StrictFloat | StrictInt = Field(ge=0.5, le=5.0)
+    rating: StrictFloat | StrictInt = Field(ge=0.5, le=5.0, allow_inf_nan=False)  # NaN, Infinity: 422 (review)
     time: StrictInt | None = Field(default=None, ge=0)  # Unix seconds; informational (the store keeps arrival order)
 
 
@@ -48,6 +53,13 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
     store = recommender.store
     min_rating = float(model.info.get("min_rating", 4.0))
     app = FastAPI(title="Signal", version="0.1.0")
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # FastAPI's own 422 echoes the input, and a NaN or Infinity rating (which Python's JSON parser accepts) can't
+        # be written back as JSON: the error became a 500 (review of day 4). The location and message are enough.
+        errors = [{key: e[key] for key in ("loc", "msg", "type") if key in e} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
 
     def dense_user(raw: int) -> int:
         try:
@@ -76,17 +88,20 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
             "status": "ok",
             "movies": model.n_items,
             "users": len(model.user_raw_ids),
-            "model": model.info.get("npz_sha256", model.info.get("dataset")),
+            "model": model.npz_sha256,  # None for a model that wasn't loaded from files
             "experiment": None if experiment is None else experiment.name,
         }
 
     @app.get("/recommendations/{user}")
     def recommendations(
-        user: int,
+        user_text: Annotated[str, Path(alias="user", pattern=DIGITS)],
         response: Response,
-        k: Annotated[int, Query(ge=1, le=MAX_K)] = 10,
+        k_text: Annotated[str, Query(alias="k", pattern=DIGITS)] = "10",
         exclude_genre: Annotated[list[str] | None, Query()] = None,
     ) -> dict[str, Any]:
+        user, k = int(user_text), int(k_text)
+        if not 1 <= k <= MAX_K:
+            raise HTTPException(status_code=422, detail=f"k must be between 1 and {MAX_K}, got {k}")
         dense = dense_user(user)
         arm = None if experiment is None else abtest.assign(experiment, user)
         try:

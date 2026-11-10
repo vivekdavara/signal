@@ -89,9 +89,13 @@ class ClickModel:
         exam = self.examined()
         no_click_other = 1.0 - exam * self.p_other  # per slot, when the slot holds another movie
         all_other = float(np.prod(no_click_other))
+        # The product over every slot but one, without dividing by that slot's factor (review of day 4: with
+        # p_other = 1 slot 1's factor is 0, and the division gave 0/0 = NaN): prefix times suffix products.
+        prefix = np.concatenate([[1.0], np.cumprod(no_click_other)[:-1]])
+        suffix = np.concatenate([np.cumprod(no_click_other[::-1])[::-1][1:], [1.0]])
         shown = (ranks >= 1) & (ranks <= self.k)
         slot = np.clip(ranks, 1, self.k) - 1
-        with_target = all_other / no_click_other[slot] * (1.0 - exam[slot] * self.p_target)
+        with_target = prefix[slot] * suffix[slot] * (1.0 - exam[slot] * self.p_target)
         out: npt.NDArray[np.float64] = 1.0 - np.where(shown, with_target, all_other)
         return out
 

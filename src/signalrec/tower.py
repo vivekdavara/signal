@@ -13,13 +13,15 @@ between NumPy and PyTorch's kernels), so the tests bound the difference and chec
 movies from either vector.
 
 ``Model`` bundles what serving reads: the user tower, the item vectors, the ranker's weights and the catalogue's raw
-ids and titles. It is saved as one ``.npz`` plus a ``model.json`` holding the configuration, provenance and the
-SHA-256 of the ``.npz``; loading checks the hash, so a model on disk is exactly the one exported.
+ids and titles. It is saved as one ``.npz`` plus a ``model.json`` holding the configuration, provenance, the catalogue,
+the SHA-256 of the ``.npz``, and a SHA-256 of model.json's own other fields; loading checks both and reads the arrays
+from the very bytes it hashed, so a model on disk is exactly the one exported.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -37,7 +39,9 @@ IntArray = npt.NDArray[np.int64]
 Float32Array = npt.NDArray[np.float32]
 Float64Array = npt.NDArray[np.float64]
 
-FORMAT_VERSION = 1
+# 2: model.json's own fields are hashed too (review of day 4: only the npz was, and the catalogue, titles and
+# max_history live in model.json).
+FORMAT_VERSION = 2
 _EPS = np.float32(1e-12)  # F.normalize's default eps
 
 
@@ -132,6 +136,7 @@ class Model:
     titles: tuple[str, ...]
     catalogue: Catalogue  # genres and years: the ranker's static inputs and the feature store's checks
     info: dict[str, Any]  # configuration and provenance, saved in model.json
+    npz_sha256: str | None = None  # set by load: which model this is (GET /health names it)
 
     @property
     def n_items(self) -> int:
@@ -206,6 +211,19 @@ def _arrays(model: Model) -> dict[str, npt.NDArray[Any]]:
     return out
 
 
+def _meta_hash(meta: dict[str, Any]) -> str:
+    """SHA-256 of model.json's fields other than this hash, as canonical JSON."""
+    fields = {k: v for k, v in meta.items() if k != "sha256"}
+    text = json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _strict_int(value: Any, what: str) -> int:
+    if type(value) is not int:  # not "4", 4.9 or true (review of day 4: int() coerced all three)
+        raise ModelError(f"model.json: {what} must be an integer, got {value!r}")
+    return value
+
+
 def save(model: Model, directory: Path) -> dict[str, Any]:
     """Write ``model.npz`` and ``model.json`` into ``directory`` (created); returns the JSON written."""
     model.check()
@@ -231,7 +249,8 @@ def save(model: Model, directory: Path) -> dict[str, Any]:
         "movie_genres": [list(g) for g in model.catalogue.movie_genres],
         "info": model.info,
     }
-    (directory / "model.json").write_text(json.dumps(meta, indent=1) + "\n")
+    meta["sha256"] = _meta_hash(meta)
+    (directory / "model.json").write_text(json.dumps(meta, indent=1, allow_nan=False) + "\n")
     return meta
 
 
@@ -247,11 +266,23 @@ def load(directory: Path) -> Model:
     if hashlib.sha256(raw).hexdigest() != meta.get("npz_sha256"):
         raise ModelError(f"{directory}: model.npz doesn't match the SHA-256 in model.json")
     try:
-        with np.load(directory / "model.npz", allow_pickle=False) as z:
+        if meta.get("sha256") != _meta_hash(meta):
+            raise ModelError(f"{directory}: model.json's fields don't match its own SHA-256")
+    except ValueError as exc:  # a NaN or infinity can't be canonical JSON
+        raise ModelError(f"{directory}: model.json holds a value JSON can't hash ({exc})") from None
+    max_history = _strict_int(meta.get("max_history"), "max_history")
+    n_layers = _strict_int(meta.get("ranker_layers"), "ranker_layers")
+    try:
+        # From the bytes just hashed, not the file again: it could have changed in between.
+        with np.load(io.BytesIO(raw), allow_pickle=False) as z:
             a = {name: z[name] for name in z.files}
-        layers = tuple((a[f"ranker_w{i}"], a[f"ranker_b{i}"]) for i in range(int(meta["ranker_layers"])))
+        layers = tuple((a[f"ranker_w{i}"], a[f"ranker_b{i}"]) for i in range(n_layers))
+        if not all(isinstance(t, str) for t in [*meta["titles"], *meta["genre_names"]]):
+            raise ModelError(f"{directory}: titles and genre names must be strings")
+        if not all(type(g) is int for movie in meta["movie_genres"] for g in movie):
+            raise ModelError(f"{directory}: genre indices must be integers")
         model = Model(
-            tower=UserTower(a["history_table"], a["w1"], a["b1"], a["w2"], a["b2"], int(meta["max_history"])),
+            tower=UserTower(a["history_table"], a["w1"], a["b1"], a["w2"], a["b2"], max_history),
             items=a["items"],
             ranker=RankerWeights(a["ranker_mean"], a["ranker_scale"], layers),
             item_raw_ids=a["item_raw_ids"].astype(np.int64),
@@ -263,6 +294,7 @@ def load(directory: Path) -> Model:
                 a["years"].astype(np.int64),
             ),
             info=dict(meta["info"]),
+            npz_sha256=str(meta["npz_sha256"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ModelError(f"{directory}: model.npz or model.json is incomplete ({exc!r})") from None

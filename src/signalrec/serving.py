@@ -67,6 +67,12 @@ class Recommender:
             raise ValueError(f"n_candidates must be an integer >= 1, got {n_candidates!r}")
         if store.catalogue.n_items != model.n_items or store.catalogue.genre_names != model.catalogue.genre_names:
             raise ValueError("the feature store's catalogue is not the model's")
+        # The tower reads the last max_history positives from the store's recent list, which keeps store.recent of
+        # them: a longer history would be cut silently, serving another model than the one evaluated (review of day 4).
+        if model.tower.max_history > store.recent:
+            raise ValueError(
+                f"the model reads {model.tower.max_history} recent positives but the store keeps {store.recent}"
+            )
         self.model = model
         self.store = store
         self.n_candidates = n_candidates

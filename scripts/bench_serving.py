@@ -262,11 +262,14 @@ class Target:
     raw_users: list[int]
     k: int
     max_connections: int
+    timeout: float  # seconds; a request that takes longer (or waits longer for a connection) counts as failed
 
 
 async def _with_client(target: Target, body: Callable[[Send], Awaitable[Any]]) -> Any:
     limits = httpx.Limits(max_connections=target.max_connections, max_keepalive_connections=target.max_connections)
-    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{target.port}", limits=limits, timeout=60) as client:
+    async with httpx.AsyncClient(
+        base_url=f"http://127.0.0.1:{target.port}", limits=limits, timeout=target.timeout
+    ) as client:
         return await body(make_send(client, target.raw_users, target.k))
 
 
@@ -321,7 +324,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[bytes]:
 
 
 def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, Any]:
-    target = Target(args.port, list(raw_users), args.k, args.max_connections)
+    target = Target(args.port, list(raw_users), args.k, args.max_connections, args.timeout)
     processes = args.client_processes
     out: dict[str, Any] = {"client processes": processes, "closed loop": [], "open loop": []}
     context = multiprocessing.get_context("spawn")
@@ -330,12 +333,13 @@ def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, 
         out["client pids"] = len(pids)
         offset = 0
         for c in args.concurrency:
-            if c % processes:
-                raise SystemExit(f"--concurrency {c} doesn't split over {processes} client processes")
+            used = min(processes, c)  # concurrency 1 is one client in one process
+            if c % used:
+                raise SystemExit(f"--concurrency {c} doesn't split over {used} client processes")
             start = time.perf_counter() + 1.0
             parts = [
-                pool.submit(_closed_part, target, c // processes, args.lead_in, args.seconds, start, offset + j * 10**7)
-                for j in range(processes)
+                pool.submit(_closed_part, target, c // used, args.lead_in, args.seconds, start, offset + j * 10**7)
+                for j in range(used)
             ]
             results = [f.result() for f in parts]
             offset += 10**8
@@ -344,6 +348,7 @@ def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, 
             elapsed = max(r[2] for r in results)
             row = {
                 "concurrency": c,
+                "client processes": used,
                 "requests": len(latencies),
                 "seconds": elapsed,
                 "throughput (req/s)": len(latencies) / elapsed,
@@ -409,6 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=_ints, default=[1, 4, 16])
     parser.add_argument("--rates", type=_rates, default=[100.0, 200.0, 400.0])
     parser.add_argument("--max-connections", type=int, default=256, help="per client process")
+    parser.add_argument("--timeout", type=float, default=10.0, help="seconds before a request counts as failed")
     parser.add_argument("--client-processes", type=int, default=4, help="processes sending the HTTP load (default 4)")
     parser.add_argument(
         "--search-threads", type=int, default=1, help="FAISS threads, here and in the server (0: FAISS's default)"
@@ -430,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     rec = recommender(_HiredisParser)
 
     t0, slept0 = time.time(), time.time() - time.monotonic()
+    load_before = os.getloadavg()
     result: dict[str, Any] = {
         "command": "python " + " ".join(["scripts/bench_serving.py", *(sys.argv[1:] if argv is None else argv)]),
         "dataset": args.dataset,
@@ -456,6 +463,8 @@ def main(argv: list[str] | None = None) -> int:
             proc.terminate()
             proc.wait(timeout=10)
     result["wall seconds"] = time.time() - t0
+    # Other work on the machine shows up here: 1-, 5- and 15-minute load averages (8 cores) before and after.
+    result["load average"] = {"before": list(load_before), "after": list(os.getloadavg())}
     # time.time() - time.monotonic() grows by the time the machine slept (the monotonic clock stops in sleep).
     result["slept seconds (estimate)"] = max(0.0, (time.time() - time.monotonic()) - slept0)
     result["environment"] = {

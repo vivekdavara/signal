@@ -326,3 +326,70 @@ validation retrieves new lists, features come from training + validation, and th
 The ranker's only job is to order 200 candidates for one user, and the label is one movie among them, so a softmax
 over the list is exactly that objective (`ranking.listwise_loss`). Lists whose held-out movie wasn't retrieved have no
 label and are skipped: the ranker can't fix a retrieval miss, which is why Recall@200 is its ceiling.
+
+## Serving and experiments (day 4)
+
+**What happens on one request?**
+`GET /recommendations/{user}` (`api.py`) maps the MovieLens id to the model's dense index and calls
+`Recommender.recommend` (`serving.py`), six timed stages: one MULTI/EXEC reads the user's features and rated set from
+Redis; the NumPy user tower turns their last 3 positives into a vector; FAISS's exact index returns the best 200 movies
+with every rated movie (and any excluded genre) excluded inside the search; one HMGET reads those 200 movies'
+popularity; the ranker scores the 200 on eight features and re-orders them; a final check raises if anything excluded
+slipped through, and the top k go back with each stage's time in the `Server-Timing` header.
+
+**Why is there no PyTorch on the request path?**
+The user tower is 64×128 and 128×64 matrices and a table lookup; NumPy does it in about 12 µs. `tower.UserTower` is
+`TwoTowerNet.users` written out in float32, and `tests/test_tower.py` checks every synthetic user's vector against
+PyTorch's within 1e-6 and that retrieval returns the same movies from either. (torch is still imported on macOS,
+before faiss, for the OpenMP reason of day 3, but never called.)
+
+**How do you know serving computes what you evaluated?**
+`scripts/serving_check.py` serves every ml-1m user through the request path, Redis included, with the protocol's
+filter (positives only), reads the rank of their test movie off the full 200-candidate list, and requires
+`ranking.json`'s test metrics back. They are equal to 1e-12 for both the re-ranked list (NDCG@10 0.1298) and the
+retrieved order (0.1220). That only holds if the exported model, the replayed store, the NumPy tower and the online
+features all match the offline ones; a test runs the same chain end to end on synthetic data through the CLI.
+
+**Why exclude inside the search instead of filtering afterwards?**
+A heavy user has rated hundreds of movies; filtering after retrieval would leave fewer than 200 candidates, or fewer
+than k results. FAISS's `IDSelectorNot` skips them during the scan, so the index returns the best 200 *eligible*
+movies. Genre exclusions go into the same set. The filter stage after ranking only checks, and raises on a violation:
+a silent drop there would hide a bug in the exclusion.
+
+**What is the rated set, and why "strictly before the test time"?**
+The processed data keeps only positives (rating ≥ 4), but a user who rated a movie 2 stars shouldn't be shown it. So
+the store has a rated set per user: positives join it in the event script, lower ratings by one SADD. `load-store`
+fills it from the raw ratings dated strictly before each user's test movie: the store is the state just before the
+test event, so the test movie itself is never filtered and evaluation through the serving path is still possible.
+
+**The serving filter raises NDCG@10 from 0.1298 to 0.1415. Is that a leak?**
+No future information: every rating in the set was made before the test movie. It removes competitors: movies the user
+rated but didn't like, which the protocol (positives only) kept in the ranking. +0.0117 [+0.0103, +0.0131] paired. It
+means the offline protocol understates what the deployed filter gets, and it's reported separately, not as the
+model's metric.
+
+**What does `POST /events` guarantee?**
+A rating at or above the model's `min_rating` goes through the same Lua script as the replay: atomic (a reader sees all
+of it or none) and idempotent (SADD to `seen` first; a repeat changes nothing), so a client retrying after a timeout is
+safe; the response says whether it applied. A lower rating is one SADD to the rated set. Bodies are strict (`1.0`,
+`true`, `"1"` and extra fields are 422s), unknown users or movies 404, Redis down 503, values Redis holds that the store
+didn't write 500. Arrival order is kept, not event time: a late event becomes the most recent (the day-3 limitation).
+
+**How does the A/B assignment work?**
+SHA-256 of "<experiment>:<user>", the first 8 bytes mod 10,000 is the bucket; buckets below the treatment share get the
+treatment. Stateless, so every server agrees and a user keeps their arm; another name splits independently (a
+chi-square test checks both). With `serve --experiment ranker-v1:0.5` the control arm skips the ranker and the
+response names the arm.
+
+**What does the A/B simulator say?**
+Its click model is synthetic (position-based; the clicked movie is the one the real user watched next), everything
+else is real: both arms' lists for all 6,034 users and the next movies. Under the default model the ranker lifts
+conversion 0.1963 → 0.2026 (+3.2% relative). One test over the 6,034 users measures +0.0169 [-0.0033, +0.0372],
+p = 0.10: not significant. Detecting the true lift at 80% power needs 63,199 users per arm (126,398 in all, 21 times
+ml-1m's users); the other two click models need 168k and 223k per arm. So an offline gain this size can't be confirmed online at this scale.
+
+**Why trust those statistics?**
+Because the simulator checks them where the truth is known: 1,000 A/A tests are significant 5.6% of the time (target
+5%), tests of the computed size detect the lift 78.8% of the time (target 80%), and 95.4% of intervals cover the true
+difference (target 95%), each within its Monte Carlo interval. The unit tests check the formulas by hand (the 10% →
+12% textbook case needs 3,839 per arm) and the click model by brute force.

@@ -262,6 +262,57 @@ of two directories: a crash between the renames leaves the old one beside it und
   - On macOS the serving process loads torch through `retrieval.py` (the only safe order with faiss) but never
     calls it; the user tower runs in NumPy. A serving process without torch installed has one runtime.
 
+### As built (day 4)
+
+- **The served model** (`tower.py`, `export.py`, `signalrec export`). The reported two-tower configuration retrained
+  on training + validation (deterministic for a seed on one machine, as the test runs are), its user tower exported to
+  NumPy float32 (`UserTower`: the history table's mean over the last `max_history` positives, the residual MLP, the L2
+  norm), the item vectors computed once, and the ranker `signalrec ranking` chose (its weights are in
+  `ranking.json`; refused if that file ranked another two-tower configuration or dataset). Saved as
+  `models/<dataset>/model.npz` + `model.json` (configuration, provenance, the catalogue, the npz's SHA-256, checked
+  on load). Gitignored: it is derived from MovieLens, and ml-1m may not be redistributed. NumPy and PyTorch user
+  vectors agree within 1e-6 on every synthetic user, and retrieval returns the same movies from either.
+- **The rated set** (`featurestore.py`, `features.rated_events`). `<ns>:u:<user>:rated`: the positive script adds
+  to it, and a lower rating goes there alone (`record_rating`, one `SADD`: no feature changes). `load-store` replays
+  the training and validation positives, then every raw rating of a prepared user on a catalogue movie **strictly
+  before that user's test time**, so the store is the state just before each test movie and the test movie itself is
+  never filtered. On ml-1m: 568,342 positives, then 973,546 ratings of which 408,571 were not already positives.
+- **The request path** (`serving.py`). Six timed stages: `serving_view` (features + rated set, one MULTI/EXEC), the
+  NumPy user tower, FAISS (exact) excluding the rated set and any excluded genres **inside the search**, so k is met
+  however much is filtered; the candidates' popularity by one HMGET (not the whole hash); the ranker; and a final
+  check that raises if anything excluded got through (a bug, never a silent drop). `exclude="liked"` excludes
+  positives only, as the offline protocol does, so the two can be compared.
+- **Serving reproduces the offline test** (`scripts/serving_check.py`). Every ml-1m user through the request path
+  with the protocol's filter gives exactly `ranking.json`'s test metrics (re-ranked and retrieved order, equal to
+  1e-12), so what is served is what was evaluated. A synthetic test runs the same chain through the CLI.
+- **API** (`api.py`, `signalrec serve`, 127.0.0.1:8116). MovieLens ids in and out; unknown users and movies 404, a bad
+  k, genre or event body 422 (strict integers: `1.0`, `true` and `"1"` are refused), Redis down 503, foreign values in
+  Redis 500. `Server-Timing` carries each stage. `POST /events` sends a rating at or above the model's `min_rating`
+  through the event script and a lower one to the rated set; both answer whether they applied, so retries are safe.
+  Sync endpoints on uvicorn's thread pool, one process.
+- **FAISS on one thread.** The Recommender sets FAISS's OpenMP threads to 1 (`--search-threads`): each request is one
+  query, and concurrent requests each opening an 8-thread parallel region oversubscribed the cores (measured: README).
+- **hiredis.** redis-py parses replies in Python unless its C parser is installed; `redis[hiredis]` is a dependency
+  now (measured: README).
+- **Latency benchmark** (`scripts/bench_serving.py`). In-process stages for every user after an untimed lead-in, with
+  each Redis parser; then over HTTP, a closed loop at fixed concurrencies and an open loop at fixed rates whose
+  latencies count from each request's scheduled time, with a paced untimed lead-in, the client's own lateness, and
+  the load split over spawned client processes sharing one schedule (one asyncio + httpx process fell behind above
+  about 400 requests/s). Percentile ranks are exact (`Fraction`).
+- **A/B testing** (`abtest.py`, `scripts/ab_simulate.py`). Assignment: SHA-256("<name>:<user>") → 10,000 buckets.
+  The simulator's **click model is synthetic** (position-based: slot r looked at with probability 1/log2(r + 1); the
+  movie the real user watched next clicked with `p_target`, any other with `p_other`); the users, both arms' lists
+  (control: retrieved order; treatment: re-ranked) and the next movies are real. It reports the true lift under the
+  model, one experiment split by the hash, the users per arm for 80% power, and checks its own statistics by Monte
+  Carlo (A/A false positives, power at the computed size, interval coverage).
+- **What day 4 leaves for day 5.**
+  - New users: the store is keyed by the model's dense user index, so a user the prepared data doesn't know is a 404.
+    The tower itself works for any history; a registry of new ids is what's missing.
+  - One process: the GIL serialises the thread pool's requests, so a second core needs a second process (and each
+    process holds its own copy of the index: 0.8 MB of vectors here).
+  - The popularity read and the features read are separate round trips (stated in `serving.py`).
+  - README results, WALKTHROUGH, `v1.0.0`.
+
 ## Day 5
 
 README with results, WALKTHROUGH.md, `v1.0.0`.

@@ -32,6 +32,9 @@ data:
 # 3's grid (history length crossed with temperature, about 30 minutes), the ranker on its candidates, and the retrieval
 # and feature-store benchmarks (take those on a quiet machine; the feature store needs Redis on 6383).
 DAY2_GRID := 0.05:on,0.05:off,0.1:on,0.1:off,0.2:on,0.2:off
+# Day 4: the served model, the store (Redis on 6383), the serving check, the latency benchmark (FAISS on its default 8
+# threads, then on one: about 3 minutes each, on a quiet machine) and the A/B simulation.
+BENCH_SERVING := --rates 100,200,400,600,800,1000 --concurrency 1,4,16
 
 results: data
 	for d in $(DATASETS); do $(SIGNALREC) baselines $$d && $(SIGNALREC) leakage $$d || exit 1; done
@@ -47,3 +50,10 @@ results: data
 	for d in $(DATASETS); do $(SIGNALREC) twotower $$d --quiet && $(SIGNALREC) ranking $$d --quiet || exit 1; done
 	$(PY) scripts/bench_retrieval.py ml-1m --out results/ml-1m/retrieval.json
 	$(PY) scripts/bench_featurestore.py ml-1m --out results/ml-1m/featurestore.json
+	$(SIGNALREC) export ml-1m
+	$(SIGNALREC) load-store ml-1m --fresh
+	$(PY) scripts/serving_check.py ml-1m
+	$(PY) scripts/bench_serving.py ml-1m $(BENCH_SERVING) --search-threads 0 \
+	  --out results/ml-1m/serving-bench-faiss-8-threads.json
+	$(PY) scripts/bench_serving.py ml-1m $(BENCH_SERVING) --out results/ml-1m/serving-bench.json
+	$(PY) scripts/ab_simulate.py ml-1m

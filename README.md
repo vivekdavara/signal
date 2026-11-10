@@ -4,10 +4,11 @@ A movie recommender with online serving, built in five days on MovieLens: baseli
 two-tower retriever trained with in-batch negatives, FAISS retrieval, a ranking stage, a Redis feature store for
 online features, and a FastAPI service (retrieve → rank → filter) with a latency benchmark and an A/B test simulator.
 
-**Status: day 3 of 5** (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the two-tower retriever,
+**Status: day 4 of 5** (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the two-tower retriever,
 chosen and reported by the same protocol, and what the split's time leak is worth to it; day 3: the history length
 chosen on validation, FAISS retrieval, a ranking stage, and a Redis feature store whose features equal the offline
-ones). [DESIGN.md](DESIGN.md) is
+ones; day 4: the serving API, which reproduces the offline test metrics exactly, a latency benchmark, and an A/B test
+simulator). [DESIGN.md](DESIGN.md) is
 the specification for all five days. CI runs on every push (see "Day 1 notes").
 
 ## Architecture
@@ -26,6 +27,7 @@ flowchart LR
     TT --> EV
   end
   subgraph online["Online (days 3-4)"]
+    EV2[POST /events] --> FS
     C([client]) --> API[FastAPI :8116]
     API --> FS[(Redis :6383<br/>feature store)]
     API --> UT[user tower<br/>numpy]
@@ -36,8 +38,10 @@ flowchart LR
   end
 ```
 
-Built so far: the whole offline side, and of the online side the feature store and the FAISS retriever (day 3); the
-API, the user tower in NumPy on the request path and the filter are day 4.
+Built: the whole offline side and the whole online side. A request reads the user's features and rated set from Redis
+(one MULTI/EXEC), runs the user tower in NumPy, retrieves 200 eligible movies from the exact FAISS index (rated movies
+and excluded genres excluded inside the search), reads their popularity (one HMGET), ranks them, checks the filter and
+returns the top k.
 
 ## How to run
 
@@ -56,6 +60,18 @@ make check                                 # ruff, ruff format --check, mypy --s
 .venv/bin/python scripts/bench_retrieval.py ml-1m --out results/ml-1m/retrieval.json
 redis-server --port 6383 --daemonize yes --save "" --appendonly no   # the feature store's Redis (tests skip without)
 .venv/bin/python scripts/bench_featurestore.py ml-1m --out results/ml-1m/featurestore.json
+# Day 4: the served model, the store, the API, and the measurements behind "Results (day 4)"
+.venv/bin/signalrec export ml-1m           # models/ml-1m/ (gitignored): two-tower on training + validation + ranker
+.venv/bin/signalrec load-store ml-1m --fresh   # positives and earlier ratings into Redis (about 15 s)
+.venv/bin/python scripts/serving_check.py ml-1m   # the request path must give ranking.json's test metrics back
+.venv/bin/signalrec serve ml-1m &          # http://127.0.0.1:8116 (--experiment ranker-v1:0.5 for an A/B split)
+curl -s 'http://127.0.0.1:8116/recommendations/1?k=5'
+curl -s -X POST http://127.0.0.1:8116/events -H 'content-type: application/json' \
+  -d '{"user": 1, "movie": 364, "rating": 5}'
+kill %1
+.venv/bin/python scripts/bench_serving.py ml-1m --rates 100,200,400,600,800,1000 --concurrency 1,4,16 \
+  --out results/ml-1m/serving-bench.json  # about 3 minutes; on a quiet machine
+.venv/bin/python scripts/ab_simulate.py ml-1m   # results/ml-1m/abtest.json (the click model is SYNTHETIC)
 redis-cli -p 6383 shutdown nosave
 ```
 
@@ -397,6 +413,49 @@ through the Lua script, 1,000 per round trip, takes 8.47 s (**67,128 events/s**,
 movies differ from the offline features. Reading the whole popularity hash takes 4.8 ms, too slow for every request:
 day 4 reads only the candidates' counts or caches it.
 
+## Results (day 4): serving, latency, A/B testing
+
+Measured on 2026-11-10 (Apple M3, 4 performance + 4 efficiency cores, macOS 26.6, Python 3.11.12, faiss-cpu 1.15.1,
+redis-py 8.1.0 with hiredis 3.5.0, Redis 8.8.0 on loopback, FastAPI 0.162.4, uvicorn 0.54.0), on AC power. Every number
+is in the JSON named next to it.
+
+### Does serving compute what was evaluated? (`python scripts/serving_check.py ml-1m`, `results/ml-1m/serving-check.json`)
+
+`signalrec export ml-1m` (20 s) retrained the reported two-tower model on training + validation and bundled it with
+`ranking.json`'s ranker; `signalrec load-store ml-1m --fresh` replayed 568,342 positives (9.8 s) and 973,546 earlier
+ratings (4.3 s; 408,571 of them not already positives) into Redis, 17 MB. Then every one of the 6,034 users went
+through the request path (Redis reads, NumPy user tower, FAISS, ranker), about 6.5 s per pass:
+
+| ml-1m test, through the request path | Recall@10 | NDCG@10 | Recall@50 | Recall@200 | equal to `ranking.json` |
+|---|---|---|---|---|---|
+| protocol filter (positives), re-ranked | 0.2314 | 0.1298 | 0.4708 | 0.6924 | yes, to 1e-12 |
+| protocol filter, retrieved order | 0.2176 | 0.1220 | 0.4581 | 0.6924 | yes, to 1e-12 |
+| serving filter (every rated movie), re-ranked | 0.2504 | 0.1415 | 0.4954 | 0.7058 | (not comparable) |
+
+So there is no training-serving skew to measure: the served lists give the offline test numbers exactly. The serving
+filter, which also removes movies the user rated below 4 (all rated before the test movie), adds +0.0117 [+0.0103,
++0.0131] NDCG@10 (paired): it removes competitors the protocol kept, so the offline protocol slightly understates the
+deployed system.
+
+### A/B test simulation (`python scripts/ab_simulate.py ml-1m`, `results/ml-1m/abtest.json`): the click model is SYNTHETIC
+
+Control serves the retrieved order and treatment the re-ranked one (serving filter, top 10): the next movie is in the
+top 10 for 23.7% and 25.0% of users. A synthetic position-based click model turns each real user's two lists into
+conversion probabilities (abtest.py). 1,000 simulated tests per check, seed 0:
+
+| click model (synthetic) | true conversion, control → treatment | true lift | one test over the 6,034 users (hash split 2,985 / 3,049) | users per arm for 80% power |
+|---|---|---|---|---|
+| p_target 0.9, p_other 0.02 | 0.1963 → 0.2026 | +0.0063 (+3.2%) | +0.0169 [-0.0033, +0.0372], p = 0.10 | 63,199 |
+| p_target 0.5, p_other 0.02 | 0.1467 → 0.1502 | +0.0034 (+2.3%) | +0.0008 [-0.0174, +0.0189], p = 0.94 | 168,217 |
+| p_target 0.9, p_other 0.1 | 0.4455 → 0.4496 | +0.0042 (+0.9%) | +0.0025 [-0.0226, +0.0275], p = 0.85 | 223,380 |
+
+The statistics, checked where the truth is known (Monte Carlo 95% intervals in brackets): A/A tests at the dataset's
+size were significant 5.6% [4.2, 7.0], 5.3% and 5.0% of the time (target 5%); tests of the computed size detected the
+lift 78.8% [76.3, 81.3], 79.0% and 81.4% of the time (target 80%); their intervals covered the true difference 95.4%,
+94.3% and 95.7% of the time (target 95%). At ml-1m's own size the test has 10.3% power under the first model. So the
+ranker's offline gain is real but small, and confirming it online would take 126,000 to 447,000 users in all, 21 to 74 times ml-1m's
+6,034; how many depends mostly on the synthetic model, which is the point of showing three.
+
 ## Day 1 notes
 
 Facts about the real files that the strict parsers found (DESIGN.md said nothing about them before):
@@ -581,6 +640,21 @@ the fixes, the ranker's own results are identical and the benchmark's recalls un
   (a redelivered event changes nothing), which an at-least-once event stream needs.
 - **A listwise ranker trained on validation lists, chosen on a held-out fifth of them** (day 3). It never sees a test
   label, and the test lists are retrieved by a model that never saw the test movies.
+- **The served model is the evaluated one, and a script proves it** (day 4). `export` retrains the reported
+  configuration exactly as the test run did and takes the ranker from `ranking.json`; `serving_check.py` requires the
+  request path, Redis included, to give the offline test metrics back to 1e-12. Skew would show up as a mismatch.
+- **NumPy on the request path, PyTorch only offline** (day 4). The user tower is two small matrices; exporting it
+  keeps the serving process free of autograd and lets a test pin NumPy's vectors to PyTorch's.
+- **Exclusions inside the search, a check after ranking** (day 4). Rated movies and excluded genres are excluded by
+  FAISS's selector, so k is always met when k eligible movies exist; the filter stage raises instead of dropping, so an
+  exclusion bug can't hide.
+- **One FAISS thread per process** (day 4). Requests are single queries; parallelism comes from serving several at
+  once, and FAISS's 8 OpenMP threads per search oversubscribed the cores under load (measured below).
+- **Stateless hash assignment** (day 4). Every server computes the same arm from (experiment, user); no table to keep
+  in sync, and a renamed experiment reshuffles independently.
+- **A simulator that checks its own statistics** (day 4). The click model is synthetic, so the lift it reports is too;
+  but the A/A rate, power and coverage are checked where the truth is known, which is what makes its sample-size
+  answer worth reading.
 
 ## Limitations
 
@@ -608,6 +682,15 @@ the fixes, the ranker's own results are identical and the benchmark's recalls un
 - The ranker's gain on ml-1m (+0.0078 NDCG@10 on test) is barely established on validation: its selection-users
   interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring. No single feature
   is shown to matter (the ablation's intervals all reach zero on 1,207 selection users).
+- Serving (day 4) knows only the prepared users: the store is keyed by the model's dense user index, so a new
+  MovieLens id is a 404, although the user tower itself works for any history.
+- One uvicorn process: its thread pool's requests take turns on the GIL, so throughput tops out near one core's worth
+  (about 1,100 requests/s here) and latency grows with concurrency; more cores need more processes. Client and server
+  shared one laptop in every measurement.
+- The features read and the popularity read are two round trips, so a request can rank with features one event
+  apart; both are counts that move by one per event.
+- The A/B simulator's click model is synthetic: its lift and sample sizes are about that model. The users, their lists
+  and their next movies are real.
 - Similarities are kept to 2^-32, so a shrink in the billions leaves them a few grid units apart (ties take over),
   and above about 2^33 ≈ 8.6e9 times a pair's co-count rounds it to zero (checked: a co-count-1 pair survives a shrink
   of 8e9 and vanishes at 9e9). Nothing refuses such a shrink; the useful range is 0 to about 100.
@@ -632,17 +715,26 @@ src/signalrec/
   ranking.py      the ranker's features, model, listwise training and NumPy export
   experiment_ranking.py    retrieve -> rank by the protocol, and the post-hoc feature ablation
   recommend.py    one user's recommendations by title
+  tower.py        the user tower in NumPy, and the model files serving reads (hash-checked)
+  export.py       the served model (two-tower on training + validation + the chosen ranker); loading the store
+  serving.py      the request path: features → user tower → retrieval → popularity → ranker → filter, timed
+  api.py          FastAPI: GET /recommendations/{user}, POST /events, /health
+  abtest.py       hash assignment, the synthetic click model, two-proportion statistics, power, the simulator
   synthetic.py    a synthetic dataset for tests and CI
   cli.py          signalrec download | synthetic | prepare | baselines | leakage | recommend | twotower |
-                  leakage-twotower | ranking
+                  leakage-twotower | ranking | export | load-store | serve
 scripts/compare_results.py   CI's check against the committed results
 scripts/bench_pipeline.py    stage timings and the similarity build's memory by block size
 scripts/recency_ablation.py  validation-only: history length for item-kNN and the two-tower model
 scripts/same_second.py       test, post hoc: each model's NDCG@10 for users tied and untied in the test's second
 scripts/bench_retrieval.py   approximate vs exact top 200, per-query latency (real and a synthetic large catalogue)
 scripts/bench_featurestore.py  replay throughput, one user's read latency, the skew check on a whole dataset
+scripts/serving_check.py     every user through the request path against ranking.json's test metrics
+scripts/bench_serving.py     per-stage latency in-process; HTTP closed loop and open loop at fixed rates
+scripts/ab_simulate.py       a simulated A/B test of the ranker: lift, power analysis, the statistics checked
 results/<dataset>/{baselines,leakage,twotower,twotower-day2,leakage-twotower,ranking}.json,
-results/ml-1m/{recency-ablation,same-second,retrieval,featurestore}.json
+results/ml-1m/{recency-ablation,same-second,retrieval,featurestore}.json,
+results/ml-1m/{serving-check,serving-bench,serving-bench-faiss-8-threads,abtest}.json
 ```
 
 ## License

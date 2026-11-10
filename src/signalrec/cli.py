@@ -23,10 +23,14 @@ from signalrec import (
     recommend,
     synthetic,
 )
+from signalrec import tower as tw
 from signalrec import twotower as tt
 from signalrec.baselines import ItemKNN, Popularity
 
 DEFAULT_DATA = Path("data")
+# Built from the data, so never committed (ml-1m's licence forbids redistribution); .gitignore has models/.
+DEFAULT_MODELS = Path("models")
+DEFAULT_REDIS = "redis://127.0.0.1:6383/0"
 
 
 def _download(args: argparse.Namespace) -> int:
@@ -263,6 +267,81 @@ def _recommend(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export(args: argparse.Namespace) -> int:
+    from signalrec import export  # torch is imported here only
+
+    processed = args.data_dir / "processed" / args.dataset
+    source = args.source or Path("results") / args.dataset / "twotower.json"
+    ranking = args.ranking or Path("results") / args.dataset / "ranking.json"
+    prepared = prepare.load(processed, args.dataset)
+    if prepared.manifest is None:  # as in _baselines
+        raise prepare.PrepareError(f"{processed}: loaded without its manifest")
+    config = _reported_config(source, args.dataset, prepared.manifest)
+    ranker = export.ranker_from_results(ranking, args.dataset, config)
+    ranked = json.loads(ranking.read_text())
+    if (ranked.get("users"), ranked.get("items")) != (prepared.n_users, prepared.n_items):
+        raise prepare.PrepareError(f"{ranking} ranked another dataset's users or movies than {processed}'s")
+    info = {
+        "dataset": args.dataset,
+        "command": "signalrec " + shlex.join(args.argv),
+        "prepared": {key: prepared.manifest[key] for key in ("params", "counts", "sources")},
+        "min_rating": prepared.manifest["params"]["min_rating"],
+        "two-tower configuration from": str(source),
+        "ranker from": str(ranking),
+        "ranker chosen": ranked.get("chosen"),
+        "trained on": "training + validation positives (as the test runs)",
+    }
+    model = export.build_model(prepared, config, ranker, info)
+    out = args.out or DEFAULT_MODELS / args.dataset
+    meta = tw.save(model, out)
+    print(f"wrote {out} (model.npz SHA-256 {meta['npz_sha256'][:12]}...)")
+    return 0
+
+
+def _load_store(args: argparse.Namespace) -> int:
+    from signalrec import export
+    from signalrec.featurestore import FeatureStore
+
+    model = tw.load(args.model or DEFAULT_MODELS / args.dataset)
+    prepared = prepare.load(args.data_dir / "processed" / args.dataset, args.dataset)
+    if not (prepared.item_raw_ids.tolist() == model.item_raw_ids.tolist()) or not (
+        prepared.user_raw_ids.tolist() == model.user_raw_ids.tolist()
+    ):
+        raise prepare.PrepareError("the model was exported from other prepared data")
+    ratings = movielens.load(args.dataset, args.data_dir / "raw" / args.dataset).ratings
+    store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
+    if args.fresh:
+        print(f"deleted {store.clear()} keys under {args.namespace}:")
+    positives, rated = export.load_store(store, prepared, ratings)
+    print(f"positives: {positives.applied} of {positives.events} applied in {positives.seconds:.1f} s")
+    print(f"ratings into the rated sets: {rated.applied} of {rated.events} new in {rated.seconds:.1f} s")
+    return 0
+
+
+def _serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from signalrec.api import create_app
+    from signalrec.featurestore import FeatureStore
+    from signalrec.serving import Recommender
+
+    model = tw.load(args.model or DEFAULT_MODELS / args.dataset)
+    store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
+    app = create_app(Recommender(model, store), args.experiment)
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
+    return 0
+
+
+def _experiment(text: str) -> Any:
+    from signalrec import abtest
+
+    name, colon, share = text.partition(":")
+    try:
+        return abtest.Experiment(name, float(share) if colon else 0.5)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: {exc}") from None
+
+
 def _positive_int(text: str) -> int:
     try:
         value = int(text)
@@ -458,6 +537,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--k", type=_positive_int, default=10)
     p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     p.set_defaults(run=_recommend)
+
+    p = sub.add_parser(
+        "export", help="the served model: the reported two-tower retrained on training + validation, and the ranker"
+    )
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    p.add_argument("--from", dest="source", type=Path, help="default: results/<dataset>/twotower.json")
+    p.add_argument("--ranking", type=Path, help="default: results/<dataset>/ranking.json")
+    p.add_argument("--out", type=Path, help="default: models/<dataset>")
+    p.set_defaults(run=_export)
+
+    p = sub.add_parser("load-store", help="replay the positives and earlier ratings into the Redis feature store")
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
+    p.add_argument("--model", type=Path, help="default: models/<dataset>")
+    p.add_argument("--redis", default=DEFAULT_REDIS, help=f"default: {DEFAULT_REDIS}")
+    p.add_argument("--namespace", default="signal")
+    p.add_argument("--fresh", action="store_true", help="delete the namespace's keys first")
+    p.set_defaults(run=_load_store)
+
+    p = sub.add_parser("serve", help="the HTTP API on 127.0.0.1:8116")
+    p.add_argument("dataset", choices=sorted(movielens.FORMATS))
+    p.add_argument("--model", type=Path, help="default: models/<dataset>")
+    p.add_argument("--redis", default=DEFAULT_REDIS, help=f"default: {DEFAULT_REDIS}")
+    p.add_argument("--namespace", default="signal")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=_positive_int, default=8116)
+    p.add_argument(
+        "--experiment",
+        type=_experiment,
+        help="name[:treatment share], e.g. ranker-v1:0.5: the control arm skips the ranker",
+    )
+    p.set_defaults(run=_serve)
     return parser
 
 
@@ -472,6 +584,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         movielens.ParseError,
         prepare.PrepareError,
         tt.TrainingError,
+        tw.ModelError,
         FileNotFoundError,
     ) as exc:
         print(f"signalrec: {exc}", file=sys.stderr)

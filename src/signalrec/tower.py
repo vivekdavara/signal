@@ -216,6 +216,7 @@ def save(model: Model, directory: Path) -> dict[str, Any]:
     try:
         with open(tmp, "wb") as f:
             np.savez(f, allow_pickle=False, **_arrays(model))
+        os.chmod(tmp, 0o644)  # mkstemp makes it 0600
         os.replace(tmp, npz)
     finally:
         if os.path.exists(tmp):

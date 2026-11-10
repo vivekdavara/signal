@@ -10,3 +10,5 @@ __pycache__/
 .env
 # MovieLens is downloaded by `signalrec download`, never committed (see DESIGN.md, "Data").
 data/
+# Models exported from the data (signalrec export): derived from MovieLens, so never committed either.
+models/

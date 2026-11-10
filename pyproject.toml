@@ -17,8 +17,8 @@ dependencies = [
     "torch>=2.9",
     # Candidate retrieval (day 3); the CPU wheel, built against NumPy 2.
     "faiss-cpu>=1.12",
-    # The online feature store (day 3).
-    "redis>=6",
+    # The online feature store (day 3); hiredis, its C reply parser, measured faster on day 4.
+    "redis[hiredis]>=6",
     # The serving API (day 4).
     "fastapi>=0.115",
     "uvicorn>=0.30",

@@ -200,3 +200,13 @@ def test_inconsistent_models_are_refused(prepared: Prepared, trained: tuple[tt.T
         with pytest.raises(tw.ModelError):
             model.check()
     good.check()
+
+
+def test_info_with_int_keys_round_trips_and_nan_is_refused(
+    tmp_path: Path, prepared: Prepared, trained: tuple[tt.TwoTowerNet, tt.Sequences]
+) -> None:
+    model = replace(_model(prepared, *trained), info={"by k": {9: "a", 10: "b"}})
+    tw.save(model, tmp_path / "ints")
+    assert tw.load(tmp_path / "ints").info == {"by k": {"9": "a", "10": "b"}}
+    with pytest.raises(tw.ModelError, match="JSON"):
+        tw.save(replace(model, info={"x": float("nan")}), tmp_path / "nan")

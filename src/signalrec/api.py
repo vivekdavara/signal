@@ -45,6 +45,12 @@ class EventIn(BaseModel):
     time: StrictInt | None = Field(default=None, ge=0)  # Unix seconds; informational (the store keeps arrival order)
 
 
+def unprocessable(loc: list[str], msg: str) -> HTTPException:
+    """A 422 in the shape FastAPI's validation errors have (a list of {loc, msg, type}), so clients parse one shape
+    (round 2 of the day-4 review: these two were plain strings)."""
+    return HTTPException(status_code=422, detail=[{"loc": loc, "msg": msg, "type": "value_error"}])
+
+
 def server_timing(rec: Recommendation) -> str:
     return ", ".join(f"{name.replace(' ', '-')};dur={seconds * 1000:.3f}" for name, seconds in rec.seconds.items())
 
@@ -102,13 +108,13 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
     ) -> dict[str, Any]:
         user, k = int(user_text), int(k_text)
         if not 1 <= k <= MAX_K:
-            raise HTTPException(status_code=422, detail=f"k must be between 1 and {MAX_K}, got {k}")
+            raise unprocessable(["query", "k"], f"k must be between 1 and {MAX_K}, got {k}")
         dense = dense_user(user)
         arm = None if experiment is None else abtest.assign(experiment, user)
         try:
             rec = recommender.recommend(dense, k=k, exclude_genres=exclude_genre or (), rank=arm != abtest.CONTROL)
         except KeyError as exc:  # an unknown genre
-            raise HTTPException(status_code=422, detail=str(exc.args[0])) from None
+            raise unprocessable(["query", "exclude_genre"], str(exc.args[0])) from None
         except (redis.RedisError, FeatureStoreError) as exc:
             raise store_errors(exc) from None
         response.headers["Server-Timing"] = server_timing(rec)

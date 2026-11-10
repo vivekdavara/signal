@@ -214,6 +214,9 @@ def _arrays(model: Model) -> dict[str, npt.NDArray[Any]]:
 def _meta_hash(meta: dict[str, Any]) -> str:
     """SHA-256 of model.json's fields other than this hash, as canonical JSON."""
     fields = {k: v for k, v in meta.items() if k != "sha256"}
+    # Through JSON first, so save and load hash the same thing: an int key in info becomes a string on disk, and
+    # sort_keys orders 10 before 9 as strings but after it as ints (round 2 of the day-4 review).
+    fields = json.loads(json.dumps(fields, allow_nan=False))
     text = json.dumps(fields, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -249,8 +252,12 @@ def save(model: Model, directory: Path) -> dict[str, Any]:
         "movie_genres": [list(g) for g in model.catalogue.movie_genres],
         "info": model.info,
     }
-    meta["sha256"] = _meta_hash(meta)
-    (directory / "model.json").write_text(json.dumps(meta, indent=1, allow_nan=False) + "\n")
+    try:
+        meta["sha256"] = _meta_hash(meta)
+        text = json.dumps(meta, indent=1, allow_nan=False)
+    except (TypeError, ValueError) as exc:  # a NaN, an infinity or a non-JSON value in info
+        raise ModelError(f"the model's info can't be written as JSON: {exc}") from None
+    (directory / "model.json").write_text(text + "\n")
     return meta
 
 

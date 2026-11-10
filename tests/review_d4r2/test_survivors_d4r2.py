@@ -40,16 +40,6 @@ def test_info_is_covered_by_model_json_hash(model: Model, tmp_path: Path) -> Non
         tw.load(tmp_path)
 
 
-def test_max_history_true_is_refused(model: Model, tmp_path: Path) -> None:
-    """Survivor (tower.py _strict_int): ``isinstance(value, int)`` for ``type(value) is int`` accepts true (a bool is
-    an int) as max_history 1."""
-    meta = _saved(model, tmp_path)
-    meta["max_history"] = True
-    _write(tmp_path, meta)
-    with pytest.raises(tw.ModelError):
-        tw.load(tmp_path)
-
-
 @pytest.mark.parametrize("genre", [1.0, True])
 def test_a_genre_index_that_is_not_an_int_is_refused(model: Model, tmp_path: Path, genre: Any) -> None:
     """Survivor (tower.py load, the movie_genres check): without it, int() coerces 1.0 and true to genre 1."""

@@ -70,7 +70,7 @@ def test_genres_are_excluded_by_name(api: TestClient, model: Model) -> None:
     for item in r.json()["items"]:
         assert names[0] not in item["genres"] and names[2] not in item["genres"]
     bad = api.get(f"/recommendations/{raw_user(model, 3)}", params={"exclude_genre": "Space Opera"})
-    assert bad.status_code == 422 and "Space Opera" in bad.json()["detail"]
+    assert bad.status_code == 422 and "Space Opera" in bad.json()["detail"][0]["msg"]
 
 
 @pytest.mark.parametrize("k", [0, -1, 101, "ten"])
@@ -172,3 +172,16 @@ def test_the_experiment_arm_decides_whether_the_ranker_runs(recommender: sv.Reco
         assert [item["movie"] for item in body["items"]] == [int(model.item_raw_ids[m]) for m in want.movies]
     assert arms == {abtest.CONTROL, abtest.TREATMENT}
     assert api.get("/health").json()["experiment"] == "ranker-v1"
+
+
+def test_every_422_has_the_same_shape(api: TestClient, model: Model) -> None:
+    user = raw_user(model, 0)
+    for r in (
+        api.get(f"/recommendations/{user}", params={"k": 101}),
+        api.get(f"/recommendations/{user}", params={"exclude_genre": "Space Opera"}),
+        api.get(f"/recommendations/{user}", params={"k": "x"}),
+        api.post("/events", json={"user": user}),
+    ):
+        assert r.status_code == 422
+        detail = r.json()["detail"]
+        assert isinstance(detail, list) and detail and {"loc", "msg", "type"} <= set(detail[0])

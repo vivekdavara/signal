@@ -30,6 +30,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from signalrec.features import Catalogue
 from signalrec.ranking import FEATURES, RankerWeights
 
 IntArray = npt.NDArray[np.int64]
@@ -129,6 +130,7 @@ class Model:
     item_raw_ids: IntArray  # MovieLens ids, ascending: dense index i is item_raw_ids[i]
     user_raw_ids: IntArray
     titles: tuple[str, ...]
+    catalogue: Catalogue  # genres and years: the ranker's static inputs and the feature store's checks
     info: dict[str, Any]  # configuration and provenance, saved in model.json
 
     @property
@@ -142,11 +144,17 @@ class Model:
             raise ModelError(f"item vectors of shape {self.items.shape} for a {self.tower.dim}-dimensional tower")
         if self.items.dtype != np.float32 or not np.isfinite(self.items).all():
             raise ModelError("item vectors must be finite float32")
-        if self.tower.n_items != n or len(self.item_raw_ids) != n or len(self.titles) != n:
+        sizes = (self.tower.n_items, len(self.item_raw_ids), len(self.titles), self.catalogue.n_items)
+        if sizes != (n, n, n, n):
             raise ModelError(
-                f"{n} item vectors, {self.tower.n_items} history rows, {len(self.item_raw_ids)} movie ids, "
-                f"{len(self.titles)} titles"
+                f"{n} item vectors, {sizes[0]} history rows, {sizes[1]} movie ids, {sizes[2]} titles, "
+                f"{sizes[3]} catalogue movies"
             )
+        if self.catalogue.years.shape != (n,):
+            raise ModelError(f"{len(self.catalogue.years)} release years for {n} movies")
+        n_genres = len(self.catalogue.genre_names)
+        if any(g < 0 or g >= n_genres for movie in self.catalogue.movie_genres for g in movie):
+            raise ModelError("a movie's genre index is outside the catalogue's genres")
         for name in ("item_raw_ids", "user_raw_ids"):
             ids = getattr(self, name)
             if len(ids) and (np.diff(ids) <= 0).any():
@@ -188,6 +196,7 @@ def _arrays(model: Model) -> dict[str, npt.NDArray[Any]]:
         "items": model.items,
         "item_raw_ids": model.item_raw_ids,
         "user_raw_ids": model.user_raw_ids,
+        "years": model.catalogue.years,
         "ranker_mean": model.ranker.mean,
         "ranker_scale": model.ranker.scale,
     }
@@ -217,6 +226,8 @@ def save(model: Model, directory: Path) -> dict[str, Any]:
         "max_history": model.tower.max_history,
         "ranker_layers": len(model.ranker.layers),
         "titles": list(model.titles),
+        "genre_names": list(model.catalogue.genre_names),
+        "movie_genres": [list(g) for g in model.catalogue.movie_genres],
         "info": model.info,
     }
     (directory / "model.json").write_text(json.dumps(meta, indent=1) + "\n")
@@ -245,6 +256,11 @@ def load(directory: Path) -> Model:
             item_raw_ids=a["item_raw_ids"].astype(np.int64),
             user_raw_ids=a["user_raw_ids"].astype(np.int64),
             titles=tuple(str(t) for t in meta["titles"]),
+            catalogue=Catalogue(
+                tuple(str(g) for g in meta["genre_names"]),
+                tuple(tuple(int(g) for g in movie) for movie in meta["movie_genres"]),
+                a["years"].astype(np.int64),
+            ),
             info=dict(meta["info"]),
         )
     except (KeyError, TypeError, ValueError) as exc:

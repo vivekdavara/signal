@@ -15,6 +15,7 @@ from signalrec import ranking as rk
 from signalrec import retrieval as rt
 from signalrec import tower as tw
 from signalrec import twotower as tt
+from signalrec.features import Catalogue
 from signalrec.prepare import Prepared
 
 MAX_HISTORY = 5
@@ -61,6 +62,7 @@ def _model(prepared: Prepared, net: tt.TwoTowerNet, seq: tt.Sequences) -> tw.Mod
         item_raw_ids=prepared.item_raw_ids,
         user_raw_ids=prepared.user_raw_ids,
         titles=prepared.titles,
+        catalogue=Catalogue.from_prepared(prepared),
         info={"note": "test"},
     )
 
@@ -134,6 +136,9 @@ def test_save_and_load_round_trip(
     np.testing.assert_array_equal(back.item_raw_ids, model.item_raw_ids)
     np.testing.assert_array_equal(back.user_raw_ids, model.user_raw_ids)
     assert back.titles == model.titles
+    assert back.catalogue.genre_names == model.catalogue.genre_names
+    assert back.catalogue.movie_genres == model.catalogue.movie_genres
+    np.testing.assert_array_equal(back.catalogue.years, model.catalogue.years)
     assert back.info == {"note": "test"}
     assert back.tower.max_history == MAX_HISTORY
     features = np.random.default_rng(0).normal(size=(7, len(rk.FEATURES)))
@@ -187,6 +192,9 @@ def test_inconsistent_models_are_refused(prepared: Prepared, trained: tuple[tt.T
         replace(good, ranker=_ranker(5)),
         replace(good, ranker=nan_ranker),
         replace(good, ranker=replace(_ranker(), scale=np.zeros(len(rk.FEATURES)))),
+        replace(good, catalogue=replace(good.catalogue, movie_genres=good.catalogue.movie_genres[:-1])),
+        replace(good, catalogue=replace(good.catalogue, movie_genres=((99,), *good.catalogue.movie_genres[1:]))),
+        replace(good, catalogue=replace(good.catalogue, years=good.catalogue.years[:-1])),
     ]
     for model in cases:
         with pytest.raises(tw.ModelError):

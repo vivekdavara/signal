@@ -684,6 +684,17 @@ the benchmark the achieved rate divided over the lead-in, `sent = due` and early
 right and are fixed (`af6ce04`): failed open-loop requests were left out of the latency percentiles (they count now,
 at the time they failed), and `load-store` didn't check the prepared data's parameters against the model's.
 
+**Round 2** (one agent at `af6ce04`, about 11 minutes, asked what round 1's fixes broke; `tests/review_d4r2/`), five
+defects, four of them in round 1's fixes (`b4a7a94`): leading zeros were still a second spelling of an id (`01`,
+`k=05`); a hash of the right type could still fail the event script halfway (a non-integer count, or one at 2^63 - 1
+overflowing an HINCRBY), so every count the script increments is checked before the first write; the replays raised a
+bare Redis error (a traceback from `load-store`); `load-store` re-read the raw ratings without checking them against
+the manifest's hashes; and counting a failure at the time it failed let instant errors pull the percentiles down, so
+failures now rank after every success. Its three untested suspicions were real too (`70fcfa3`): an int key in a
+model's `info` hashed differently after the JSON round trip, a NaN in `info` crashed export, and two 422s had a
+different body shape. Mutants: 14, 8 killed, 5 meaningful survivors killed by `test_survivors_d4r2.py`, one
+equivalent. After both rounds the serving check is still exact and the exported model's hash unchanged.
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are

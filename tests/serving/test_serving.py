@@ -186,3 +186,17 @@ def test_load_store_is_idempotent(fresh: FeatureStore, prepared: Prepared, datas
     for u in range(prepared.n_users):
         assert fresh.user(u) == users[u]
     np.testing.assert_array_equal(fresh.popularity(), popularity)
+
+
+def test_the_recommender_runs_faiss_on_one_thread_unless_told_otherwise(loaded: FeatureStore, model: Model) -> None:
+    import faiss
+
+    before = faiss.omp_get_max_threads()
+    try:
+        faiss.omp_set_num_threads(4)
+        sv.Recommender(model, loaded, search_threads=None)
+        assert faiss.omp_get_max_threads() == 4
+        sv.Recommender(model, loaded)
+        assert faiss.omp_get_max_threads() == sv.SEARCH_THREADS == 1
+    finally:
+        faiss.omp_set_num_threads(before)

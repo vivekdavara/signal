@@ -327,7 +327,8 @@ def _serve(args: argparse.Namespace) -> int:
 
     model = tw.load(args.model or DEFAULT_MODELS / args.dataset)
     store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
-    app = create_app(Recommender(model, store), args.experiment)
+    threads = None if args.search_threads == 0 else args.search_threads
+    app = create_app(Recommender(model, store, search_threads=threads), args.experiment)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     return 0
 
@@ -340,6 +341,16 @@ def _experiment(text: str) -> Any:
         return abtest.Experiment(name, float(share) if colon else 0.5)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"{text!r}: {exc}") from None
+
+
+def _non_negative_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"{value} is negative")
+    return value
 
 
 def _positive_int(text: str) -> int:
@@ -564,6 +575,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--namespace", default="signal")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=_positive_int, default=8116)
+    p.add_argument(
+        "--search-threads",
+        type=_non_negative_int,
+        default=1,
+        help="FAISS's OpenMP threads (default 1, see serving.SEARCH_THREADS; 0 leaves FAISS's own default)",
+    )
     p.add_argument(
         "--experiment",
         type=_experiment,

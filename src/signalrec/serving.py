@@ -39,6 +39,11 @@ Float64Array = npt.NDArray[np.float64]
 N_CANDIDATES = 200
 STAGES = ("features", "user tower", "retrieve", "popularity", "rank", "filter")
 EXCLUDE = ("rated", "liked")
+# FAISS's OpenMP threads for the process (None leaves them alone). A request searches one query, which gains nothing
+# from 8 threads, and concurrent requests each starting a parallel region oversubscribe the cores: measured on day 4,
+# with FAISS's default of 8 threads the server's own pipeline time at 16 concurrent requests was 9.3 ms (p50), and an
+# open loop at 600 requests/s collapsed to 341 served per second. Requests run in parallel instead.
+SEARCH_THREADS = 1
 
 
 @dataclass(frozen=True)
@@ -60,6 +65,7 @@ class Recommender:
         store: FeatureStore,
         n_candidates: int = N_CANDIDATES,
         index: rt.IndexSpec | None = None,
+        search_threads: int | None = SEARCH_THREADS,
     ) -> None:
         model.check()
         if type(n_candidates) is not int or n_candidates < 1:
@@ -70,6 +76,8 @@ class Recommender:
         self.store = store
         self.n_candidates = n_candidates
         self.retriever = rt.Retriever(model.items, index or rt.IndexSpec("flat"))
+        if search_threads is not None:
+            rt.set_threads(search_threads)
         self.context = rk.Context.build(model.catalogue, model.items)
         genre_of = {name: g for g, name in enumerate(model.catalogue.genre_names)}
         self._genre_index = genre_of

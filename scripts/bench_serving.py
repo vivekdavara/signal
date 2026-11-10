@@ -25,12 +25,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import multiprocessing
 import os
 import platform
 import subprocess
 import sys
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -65,6 +68,13 @@ def percentile(values: Sequence[float], p: str) -> float:
         raise ValueError(f"percentile must be in (0, 100], got {p}")
     rank = -(-q.numerator * len(ordered) // q.denominator)  # ceil(q * n) in integers
     return ordered[max(rank, 1) - 1]
+
+
+def faiss_threads() -> int:
+    import faiss
+
+    n: int = faiss.omp_get_max_threads()
+    return n
 
 
 def summary_us(seconds: Sequence[float]) -> dict[str, float]:
@@ -124,9 +134,16 @@ def make_send(client: httpx.AsyncClient, raw_users: Sequence[int], k: int) -> Se
     return send
 
 
-async def closed_loop(send: Send, concurrency: int, seconds: float, offset: int = 0) -> dict[str, Any]:
-    latencies: list[float] = []
-    server: list[float] = []
+async def closed_loop(
+    send: Send,
+    concurrency: int,
+    seconds: float,
+    offset: int = 0,
+    latencies: list[float] | None = None,
+    server: list[float] | None = None,
+) -> dict[str, Any]:
+    latencies = [] if latencies is None else latencies
+    server = [] if server is None else server
     counter = [offset]
     stop = time.perf_counter() + seconds
 
@@ -151,39 +168,49 @@ async def closed_loop(send: Send, concurrency: int, seconds: float, offset: int 
     }
 
 
-async def open_loop(
-    send: Send,
-    rate: float,
-    seconds: float,
-    lead_in: float,
-    offset: int = 0,
-    trace: list[dict[str, float]] | None = None,
-) -> dict[str, Any]:
-    """Requests every 1/rate seconds for lead_in + seconds; only those scheduled after the lead-in are timed."""
-    n_lead = round(rate * lead_in)
-    n = n_lead + round(rate * seconds)
-    rows: list[tuple[int, float, float, float, float]] = []  # index, due, sent, done, server
-    failures: list[str] = []
-    start = time.perf_counter() + 0.05
+Row = tuple[int, float, float, float, float]  # schedule index, due, sent, done, server pipeline seconds
+
+
+async def open_loop_part(
+    send: Send, rate: float, n: int, start: float, phase: int = 0, stride: int = 1, offset: int = 0
+) -> tuple[list[Row], list[tuple[int, str]]]:
+    """Send requests ``phase, phase + stride, ...`` of a schedule of ``n`` at ``rate`` from ``start``: one client
+    process's share of the open loop (with ``stride`` processes, process j sends every stride-th request)."""
+    rows: list[Row] = []
+    failures: list[tuple[int, str]] = []
 
     async def one(i: int, due: float) -> None:
         sent = time.perf_counter()
         try:
             server = await send(offset + i)
         except Exception as exc:  # a failed request is counted, never dropped from the books
-            failures.append(repr(exc))
+            failures.append((i, repr(exc)))
             return
         rows.append((i, due, sent, time.perf_counter(), server))
 
     tasks = []
-    for i in range(n):
+    for i in range(phase, n, stride):
         due = start + i / rate
         delay = due - time.perf_counter()
         if delay > 0:
             await asyncio.sleep(delay)
         tasks.append(asyncio.create_task(one(i, due)))
     await asyncio.gather(*tasks)
+    return rows, failures
+
+
+def summarise_open(
+    rate: float,
+    n_lead: int,
+    n: int,
+    start: float,
+    rows: list[Row],
+    failures: list[tuple[int, str]],
+    trace: list[dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    """Only requests scheduled after the lead-in count, failures included."""
     timed = [r for r in rows if r[0] >= n_lead]
+    failed = [f for f in failures if f[0] >= n_lead]
     if trace is not None:
         trace.extend({"i": r[0], "due": r[1] - start, "sent": r[2] - start, "done": r[3] - start} for r in timed)
     latency = [done - due for _, due, _, done, _ in timed]
@@ -195,8 +222,8 @@ async def open_loop(
         "scheduled (timed)": n - n_lead,
         "lead-in requests (untimed)": n_lead,
         "completed (timed)": len(timed),
-        "failed": len(failures),
-        "first failures": failures[:3],
+        "failed": len(failed),
+        "first failures": [f[1] for f in failed[:3]],
         "achieved (req/s)": len(timed) / (last_done - first_due) if timed else 0.0,
         "latency from scheduled time (µs)": summary_us(latency) if latency else None,
         "client lateness, sent - scheduled (µs)": summary_us(lateness) if lateness else None,
@@ -204,11 +231,80 @@ async def open_loop(
     }
 
 
+async def open_loop(
+    send: Send,
+    rate: float,
+    seconds: float,
+    lead_in: float,
+    offset: int = 0,
+    trace: list[dict[str, float]] | None = None,
+) -> dict[str, Any]:
+    """Requests every 1/rate seconds for lead_in + seconds, from this process; only those after the lead-in count."""
+    n_lead = round(rate * lead_in)
+    n = n_lead + round(rate * seconds)
+    start = time.perf_counter() + 0.05
+    rows, failures = await open_loop_part(send, rate, n, start, offset=offset)
+    return summarise_open(rate, n_lead, n, start, rows, failures, trace)
+
+
+# --- several client processes ---------------------------------------------------------------------------------------
+#
+# One Python process running asyncio and httpx can't send much more than about 400 requests a second on time: measured
+# on day 4, its own lateness (sent - scheduled) was 0.18 ms at 400/s and 46 ms at 600/s, when it got 185/s out. So the
+# HTTP runs can split the load over --client-processes processes, each sending its share of one schedule. They share
+# the schedule's start through time.perf_counter, which is system-wide (mach_absolute_time on macOS, CLOCK_MONOTONIC on
+# Linux), and run in spawned processes started and warmed before anything is timed.
+
+
+@dataclass(frozen=True)
+class Target:
+    port: int
+    raw_users: list[int]
+    k: int
+    max_connections: int
+
+
+async def _with_client(target: Target, body: Callable[[Send], Awaitable[Any]]) -> Any:
+    limits = httpx.Limits(max_connections=target.max_connections, max_keepalive_connections=target.max_connections)
+    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{target.port}", limits=limits, timeout=60) as client:
+        return await body(make_send(client, target.raw_users, target.k))
+
+
+def _ready(_: int) -> int:
+    time.sleep(0.2)  # long enough that every worker gets one of the calls
+    return os.getpid()
+
+
+def _open_part(
+    target: Target, rate: float, n: int, start: float, phase: int, stride: int, offset: int
+) -> tuple[list[Row], list[tuple[int, str]]]:
+    async def body(send: Send) -> tuple[list[Row], list[tuple[int, str]]]:
+        return await open_loop_part(send, rate, n, start, phase, stride, offset)
+
+    out: tuple[list[Row], list[tuple[int, str]]] = asyncio.run(_with_client(target, body))
+    return out
+
+
+def _closed_part(
+    target: Target, concurrency: int, warmup: float, seconds: float, start: float, offset: int
+) -> tuple[list[float], list[float], float]:
+    async def body(send: Send) -> tuple[list[float], list[float], float]:
+        await asyncio.sleep(max(0.0, start - time.perf_counter()))
+        await closed_loop(send, concurrency, warmup, offset)  # untimed: this process's connections warm up
+        latencies: list[float] = []
+        server: list[float] = []
+        row = await closed_loop(send, concurrency, seconds, offset + 10**6, latencies, server)
+        return latencies, server, row["seconds"]
+
+    out: tuple[list[float], list[float], float] = asyncio.run(_with_client(target, body))
+    return out
+
+
 def start_server(args: argparse.Namespace) -> subprocess.Popen[bytes]:
     command = [sys.executable, "-m", "signalrec.cli", "serve", args.dataset, "--port", str(args.port)]
     if args.model:
         command += ["--model", str(args.model)]
-    command += ["--redis", args.redis, "--namespace", args.namespace]
+    command += ["--redis", args.redis, "--namespace", args.namespace, "--search-threads", str(args.search_threads)]
     proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -224,16 +320,36 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[bytes]:
     raise RuntimeError("the server didn't answer /health within 60 s")
 
 
-async def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, Any]:
-    limits = httpx.Limits(max_connections=args.max_connections, max_keepalive_connections=args.max_connections)
-    out: dict[str, Any] = {"closed loop": [], "open loop": []}
-    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{args.port}", limits=limits, timeout=30) as client:
-        send = make_send(client, raw_users, args.k)
+def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, Any]:
+    target = Target(args.port, list(raw_users), args.k, args.max_connections)
+    processes = args.client_processes
+    out: dict[str, Any] = {"client processes": processes, "closed loop": [], "open loop": []}
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=processes, mp_context=context) as pool:
+        pids = set(pool.map(_ready, range(processes * 4)))  # every worker started (and its imports done)
+        out["client pids"] = len(pids)
         offset = 0
-        await closed_loop(send, 4, args.lead_in)  # untimed warm-up of the server and the connections
         for c in args.concurrency:
-            row = await closed_loop(send, c, args.seconds, offset)
-            offset += row["requests"]
+            if c % processes:
+                raise SystemExit(f"--concurrency {c} doesn't split over {processes} client processes")
+            start = time.perf_counter() + 1.0
+            parts = [
+                pool.submit(_closed_part, target, c // processes, args.lead_in, args.seconds, start, offset + j * 10**7)
+                for j in range(processes)
+            ]
+            results = [f.result() for f in parts]
+            offset += 10**8
+            latencies = [x for r in results for x in r[0]]
+            server = [x for r in results for x in r[1]]
+            elapsed = max(r[2] for r in results)
+            row = {
+                "concurrency": c,
+                "requests": len(latencies),
+                "seconds": elapsed,
+                "throughput (req/s)": len(latencies) / elapsed,
+                "latency (µs)": summary_us(latencies),
+                "server pipeline (µs)": summary_us(server),
+            }
             out["closed loop"].append(row)
             print(
                 f"closed loop c={c}: {row['throughput (req/s)']:.0f} req/s, "
@@ -242,13 +358,27 @@ async def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict
             )
         trace: list[dict[str, float]] | None = [] if args.trace else None
         for rate in args.rates:
-            row = await open_loop(send, rate, args.seconds, args.lead_in, offset, trace)
-            offset += row["scheduled (timed)"] + row["lead-in requests (untimed)"]
+            n_lead = round(rate * args.lead_in)
+            n = n_lead + round(rate * args.seconds)
+            start = time.perf_counter() + 1.0
+            open_parts = [
+                pool.submit(_open_part, target, rate, n, start, j, processes, offset) for j in range(processes)
+            ]
+            rows: list[Row] = []
+            failures: list[tuple[int, str]] = []
+            for future in open_parts:
+                r, fail = future.result()
+                rows += r
+                failures += fail
+            offset += n
+            row = summarise_open(rate, n_lead, n, start, rows, failures, trace)
             out["open loop"].append(row)
             lat = row["latency from scheduled time (µs)"] or {}
+            late = row["client lateness, sent - scheduled (µs)"] or {}
             print(
                 f"open loop {rate:.0f} req/s: achieved {row['achieved (req/s)']:.0f}, failed {row['failed']}, "
-                f"p50 {lat.get('p50', float('nan')):.0f} µs, p99 {lat.get('p99', float('nan')):.0f} µs",
+                f"p50 {lat.get('p50', float('nan')):.0f} µs, p99 {lat.get('p99', float('nan')):.0f} µs, "
+                f"client lateness p99 {late.get('p99', float('nan')):.0f} µs",
                 flush=True,
             )
         if trace is not None and args.trace:
@@ -278,7 +408,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seconds", type=float, default=10.0, help="each HTTP run's timed length")
     parser.add_argument("--concurrency", type=_ints, default=[1, 4, 16])
     parser.add_argument("--rates", type=_rates, default=[100.0, 200.0, 400.0])
-    parser.add_argument("--max-connections", type=int, default=256)
+    parser.add_argument("--max-connections", type=int, default=256, help="per client process")
+    parser.add_argument("--client-processes", type=int, default=4, help="processes sending the HTTP load (default 4)")
+    parser.add_argument(
+        "--search-threads", type=int, default=1, help="FAISS threads, here and in the server (0: FAISS's default)"
+    )
     parser.add_argument("--no-http", action="store_true", help="the in-process stages only")
     parser.add_argument("--trace", type=Path, help="write every timed open-loop request's due/sent/done times here")
     parser.add_argument("--out", type=Path, help="default: results/<dataset>/serving-bench.json")
@@ -290,7 +424,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def recommender(parser: Any) -> Recommender:
         pool = redis.ConnectionPool.from_url(args.redis, parser_class=parser)
-        return Recommender(model, FeatureStore(redis.Redis(connection_pool=pool), model.catalogue, args.namespace))
+        store = FeatureStore(redis.Redis(connection_pool=pool), model.catalogue, args.namespace)
+        return Recommender(model, store, search_threads=args.search_threads or None)
 
     rec = recommender(_HiredisParser)
 
@@ -300,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
         "dataset": args.dataset,
         "candidates": rec.n_candidates,
         "index": rec.retriever.spec.label(),
+        "FAISS threads": faiss_threads(),
     }
     result["stages, in-process"] = {}
     for name, parser_class in PARSERS.items():
@@ -315,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         raw_users = [int(model.user_raw_ids[u]) for u in users]
         proc = start_server(args)
         try:
-            result["http"] = asyncio.run(bench_http(args, raw_users))
+            result["http"] = bench_http(args, raw_users)
         finally:
             proc.terminate()
             proc.wait(timeout=10)

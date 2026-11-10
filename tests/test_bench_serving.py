@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import math
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -114,3 +115,27 @@ def test_the_trace_records_every_timed_request() -> None:
     asyncio.run(bs.open_loop(send, rate=100, seconds=0.2, lead_in=0.1, trace=trace))
     assert [t["i"] for t in sorted(trace, key=lambda t: t["i"])] == list(range(10, 30))
     assert all(t["due"] <= t["sent"] <= t["done"] for t in trace)
+
+
+def test_the_parts_of_a_schedule_send_every_request_once_at_its_time() -> None:
+    send, calls = _fake(0.001)
+
+    async def both() -> list[tuple[list[bs.Row], list[tuple[int, str]]]]:
+        start = time.perf_counter() + 0.02
+        return list(await asyncio.gather(*(bs.open_loop_part(send, 400, 80, start, j, 3) for j in range(3))))
+
+    parts = asyncio.run(both())
+    rows = [r for part, _ in parts for r in part]
+    assert sorted(r[0] for r in rows) == list(range(80))
+    assert sorted(calls) == list(range(80))
+    for j, (part, _) in enumerate(parts):
+        assert {r[0] % 3 for r in part} == {j}
+    start = min(r[1] for r in rows)
+    assert all(r[1] == pytest.approx(start + r[0] / 400) for r in rows)  # one schedule, whichever part sent it
+
+
+def test_lead_in_failures_are_not_counted_with_the_timed_ones() -> None:
+    send, _ = _fake(0.001, fail_every=5)
+    row = asyncio.run(bs.open_loop(send, rate=500, seconds=0.1, lead_in=0.1))
+    assert row["lead-in requests (untimed)"] == 50 and row["scheduled (timed)"] == 50
+    assert row["failed"] == 10 and row["completed (timed)"] == 40

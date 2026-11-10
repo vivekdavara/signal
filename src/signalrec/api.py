@@ -30,9 +30,10 @@ from signalrec.featurestore import FeatureStoreError
 from signalrec.serving import Recommendation, Recommender
 
 MAX_K = 100
-# Path and query integers as digits only: FastAPI's lax int parsing read "1_0", "+5", " 5" and "5.0" as numbers, so
-# /recommendations/1_0 served user 10 (review of day 4). Up to 18 digits: always an int64.
-DIGITS = r"^[0-9]{1,18}$"
+# Path and query integers as canonical digits only: FastAPI's lax int parsing read "1_0", "+5", " 5" and "5.0" as
+# numbers, so /recommendations/1_0 served user 10 (review of day 4), and leading zeros made "01" a second name for
+# user 1 (round 2). Up to 18 digits: always an int64.
+DIGITS = r"^(0|[1-9][0-9]{0,17})$"
 
 
 class EventIn(BaseModel):

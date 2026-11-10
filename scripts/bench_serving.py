@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import multiprocessing
 import os
 import platform
@@ -70,12 +71,16 @@ def percentile(values: Sequence[float], p: str) -> float:
     return ordered[max(rank, 1) - 1]
 
 
-def summary_us(seconds: Sequence[float]) -> dict[str, float]:
-    """p50/p95/p99/max in microseconds."""
+def summary_us(seconds: Sequence[float]) -> dict[str, float | None]:
+    """p50/p95/p99/max in microseconds; a failed request is infinite, and a statistic it decides is None (null)."""
     us = [s * 1e6 for s in seconds]
-    out = {f"p{p}": percentile(us, p) for p in PERCENTILES}
-    out["max"] = max(us)
-    out["mean"] = float(np.mean(us))
+
+    def finite(x: float) -> float | None:
+        return x if math.isfinite(x) else None
+
+    out: dict[str, float | None] = {f"p{p}": finite(percentile(us, p)) for p in PERCENTILES}
+    out["max"] = finite(max(us))
+    out["mean"] = finite(float(np.mean(us)))
     return out
 
 
@@ -203,14 +208,14 @@ def summarise_open(
     failures: list[Failure],
     trace: list[dict[str, float]] | None = None,
 ) -> dict[str, Any]:
-    """Only requests scheduled after the lead-in count, failures included: a failed request's latency is the time until
-    it failed (a lower bound on what its user waited), so failures can't make the percentiles look better (review of
-    day 4: they were left out)."""
+    """Only requests scheduled after the lead-in count, failures included, as slower than any success: a failed request
+    never got an answer, so it ranks last (review of day 4: failures were left out; round 2: counted at the time they
+    failed, a fast error made the percentiles look better). A percentile that lands on a failure is reported as null."""
     timed = [r for r in rows if r[0] >= n_lead]
     failed = [f for f in failures if f[0] >= n_lead]
     if trace is not None:
         trace.extend({"i": r[0], "due": r[1] - start, "sent": r[2] - start, "done": r[3] - start} for r in timed)
-    latency = [done - due for _, due, _, done, _ in timed] + [at - due for _, _, due, at in failed]
+    latency = [done - due for _, due, _, done, _ in timed] + [math.inf] * len(failed)
     lateness = [sent - due for _, due, sent, _, _ in timed]
     first_due = min((r[1] for r in timed), default=start)
     last_done = max((r[3] for r in timed), default=start)
@@ -379,8 +384,8 @@ def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, 
             late = row["client lateness, sent - scheduled (µs)"] or {}
             print(
                 f"open loop {rate:.0f} req/s: achieved {row['achieved (req/s)']:.0f}, failed {row['failed']}, "
-                f"p50 {lat.get('p50', float('nan')):.0f} µs, p99 {lat.get('p99', float('nan')):.0f} µs, "
-                f"client lateness p99 {late.get('p99', float('nan')):.0f} µs",
+                f"p50 {lat.get('p50') or float('nan'):.0f} µs, p99 {lat.get('p99') or float('nan'):.0f} µs, "
+                f"client lateness p99 {late.get('p99') or float('nan'):.0f} µs",
                 flush=True,
             )
         if trace is not None and args.trace:

@@ -26,6 +26,7 @@ from signalrec import (
 from signalrec import tower as tw
 from signalrec import twotower as tt
 from signalrec.baselines import ItemKNN, Popularity
+from signalrec.featurestore import FeatureStoreError
 
 DEFAULT_DATA = Path("data")
 # Built from the data, so never committed (ml-1m's licence forbids redistribution); .gitignore has models/.
@@ -313,7 +314,12 @@ def _load_store(args: argparse.Namespace) -> int:
     on_disk = None if prepared.manifest is None else {k: prepared.manifest[k] for k in ("params", "counts", "sources")}
     if on_disk != model.info.get("prepared"):
         raise prepare.PrepareError("the model was exported from prepared data with other parameters or sources")
-    ratings = movielens.load(args.dataset, args.data_dir / "raw" / args.dataset).ratings
+    raw = args.data_dir / "raw" / args.dataset
+    # The rated sets come from the raw files, which must still be the ones prepare read (round 2 of the day-4 review).
+    for name, digest in (on_disk or {}).get("sources", {}).items():
+        if not (raw / name).is_file() or prepare.sha256_of(raw / name) != digest:
+            raise prepare.PrepareError(f"{raw / name} is not the file the prepared data was built from")
+    ratings = movielens.load(args.dataset, raw).ratings
     store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
     if args.fresh:
         print(f"deleted {store.clear()} keys under {args.namespace}:")
@@ -590,6 +596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prepare.PrepareError,
         tt.TrainingError,
         tw.ModelError,
+        FeatureStoreError,
         FileNotFoundError,
     ) as exc:
         print(f"signalrec: {exc}", file=sys.stderr)

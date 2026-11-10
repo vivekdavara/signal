@@ -41,14 +41,32 @@ INT64_MAX = 2**63 - 1
 
 # KEYS: recent, seen, genres, stats, popularity, rated. ARGV: movie, recent cap, year (or -1), genre indices...
 # A positive is also a rating, so it joins ``rated`` in the same script (day 4).
-# A script is atomic for other clients but not rolled back if a command fails halfway, so every key's type is checked
-# before the first write (review of day 4: a rated key of another type failed the last SADD and kept the rest).
+# A script is atomic for other clients but not rolled back if a command fails halfway, so everything that could fail is
+# checked before the first write: every key's type (review of day 4: a rated key of another type failed the last SADD
+# and kept the rest), and every count it increments must be digits, below 10^18 (round 2: a non-integer or near-2^63
+# count failed an HINCRBY halfway). 10^18 is far beyond any real count, and a year sum's +9999 can't overflow from it.
 _RECORD = """
 local expected = {'list', 'set', 'hash', 'hash', 'hash', 'set'}
 for i = 1, 6 do
   local t = redis.call('TYPE', KEYS[i])['ok']
   if t ~= 'none' and t ~= expected[i] then
     return redis.error_reply('WRONGTYPE ' .. KEYS[i] .. ' holds a ' .. t .. ', not a ' .. expected[i])
+  end
+end
+local function count_ok(key, field)
+  local v = redis.call('HGET', key, field)
+  if v and not (string.match(v, '^%d+$') and string.len(v) <= 18) then
+    return false
+  end
+  return true
+end
+local checks = {{KEYS[4], 'positives'}, {KEYS[4], 'year_sum'}, {KEYS[4], 'year_count'}, {KEYS[5], ARGV[1]}}
+for i = 4, #ARGV do
+  checks[#checks + 1] = {KEYS[3], ARGV[i]}
+end
+for _, c in ipairs(checks) do
+  if not count_ok(c[1], c[2]) then
+    return redis.error_reply('BADCOUNT ' .. c[1] .. ' field ' .. c[2] .. ' is not a count below 10^18')
   end
 end
 if redis.call('SADD', KEYS[2], ARGV[1]) == 0 then
@@ -136,10 +154,8 @@ class FeatureStore:
         keys, args = self._args(event)
         try:
             return bool(self._record(keys=keys, args=args))
-        except redis.ResponseError as exc:
-            if "WRONGTYPE" in str(exc):
-                raise FeatureStoreError(f"user {event.user}: {exc}") from None
-            raise
+        except redis.ResponseError as exc:  # WRONGTYPE or BADCOUNT: the script wrote nothing
+            raise FeatureStoreError(f"user {event.user}: {exc}") from None
 
     def record_rating(self, event: Event) -> bool:
         """A rating that is not a positive: the movie joins the user's ``rated`` set only (no feature changes).
@@ -161,11 +177,20 @@ class FeatureStore:
             pending += 1
             total += 1
             if pending == batch:
-                applied += sum(int(r) for r in pipe.execute())
+                applied += self._execute(pipe)
                 pending = 0
         if pending:
-            applied += sum(int(r) for r in pipe.execute())
+            applied += self._execute(pipe)
         return ReplayStats(total, applied, time.perf_counter() - t0)
+
+    @staticmethod
+    def _execute(pipe: Any) -> int:
+        """Run a batch; a command Redis refused is a ``FeatureStoreError`` (round 2 of the day-4 review: the replays,
+        which load-store runs, raised a bare ResponseError, a traceback from the command line)."""
+        try:
+            return sum(int(r) for r in pipe.execute())
+        except redis.ResponseError as exc:
+            raise FeatureStoreError(f"replay: {exc}") from None
 
     def replay(self, events: Iterable[Event], batch: int = 1000) -> ReplayStats:
         """Apply events in order, ``batch`` scripts per round trip (a pipeline, not a transaction: each script is
@@ -184,10 +209,10 @@ class FeatureStore:
             pending += 1
             total += 1
             if pending == batch:
-                applied += sum(int(r) for r in pipe.execute())
+                applied += self._execute(pipe)
                 pending = 0
         if pending:
-            applied += sum(int(r) for r in pipe.execute())
+            applied += self._execute(pipe)
         return ReplayStats(total, applied, time.perf_counter() - t0)
 
     def user(self, user: int) -> UserFeatures:

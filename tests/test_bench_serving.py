@@ -152,4 +152,25 @@ def test_failed_requests_count_in_the_latency_percentiles() -> None:
 
     row = asyncio.run(bs.open_loop(send, rate=200, seconds=0.2, lead_in=0.0))
     assert row["failed"] == 20 and row["completed (timed)"] == 20
-    assert row["latency from scheduled time (µs)"]["p99"] >= 50_000
+    lat = row["latency from scheduled time (µs)"]
+    # Failures rank after every success (round 2: counted at their failure time, a fast error flattered the median).
+    assert lat["p50"] is not None and lat["p50"] < 50_000  # the 20th of 40: the slowest success
+    assert lat["p95"] is None and lat["p99"] is None and lat["max"] is None
+
+
+def test_fast_failures_never_make_the_percentiles_look_better() -> None:
+    async def send(i: int) -> float:
+        if i % 10 == 0:
+            raise RuntimeError("HTTP 503")  # fails at once
+        await asyncio.sleep(0.002)
+        return 0.0
+
+    async def ok(i: int) -> float:
+        await asyncio.sleep(0.002)
+        return 0.0
+
+    with_errors = asyncio.run(bs.open_loop(send, rate=200, seconds=0.3, lead_in=0.0))
+    without = asyncio.run(bs.open_loop(ok, rate=200, seconds=0.3, lead_in=0.0))
+    assert with_errors["failed"] == 6
+    assert with_errors["latency from scheduled time (µs)"]["p50"] >= 2_000  # not pulled down by instant errors
+    assert without["latency from scheduled time (µs)"]["p99"] is not None

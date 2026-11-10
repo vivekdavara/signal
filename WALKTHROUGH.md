@@ -393,3 +393,37 @@ Because the simulator checks them where the truth is known: 1,000 A/A tests are 
 5%), tests of the computed size detect the lift 78.8% of the time (target 80%), and 95.4% of intervals cover the true
 difference (target 95%), each within its Monte Carlo interval. The unit tests check the formulas by hand (the 10% →
 12% textbook case needs 3,839 per arm) and the click model by brute force.
+
+**Why an open loop and a closed loop?**
+A closed loop of c clients sends the next request only when the last answer arrives, so when the server slows down
+the clients slow down with it and the queueing never shows in the latencies (coordinated omission): it measures
+capacity. An open loop sends on a fixed schedule whatever the server does and measures each latency from the
+request's scheduled time, so time spent waiting counts: that is the latency a user sees at a given load. Above
+capacity an open loop's queue grows for the whole run, so latencies climb into seconds; that is the right answer, not
+a broken benchmark.
+
+**How do you know the load generator isn't the bottleneck?**
+It reports its own lateness (sent − scheduled). The first version, one asyncio + httpx process, was 0.18 ms late at
+400 requests/s and 46 ms late at 600/s, where it got only 185/s out, so those numbers were about the client. The HTTP
+runs now split one schedule over four spawned client processes (perf_counter is system-wide, so they share the start
+time), and the lateness is in every row.
+
+**What did you get wrong on day 4?**
+I saw the open loop collapse at 600 requests/s, guessed that FAISS's 8 OpenMP threads per search were oversubscribing
+the cores, set one thread, saw a short run hold, and committed it as the fix. Then alternating runs of both settings
+disagreed with each other, so I checked the mechanism directly: a one-query search never starts an OpenMP worker (the
+process stays at one OS thread) and costs the same CPU time either way (83-89 µs). The "before and after" had been
+another session's builds sharing the laptop (load average 6 to 9). The setting was removed in a commit that says so,
+and every benchmark now records the load average.
+
+**What did measuring change?**
+redis-py was parsing replies in pure Python: a 200-field HMGET took 251-343 µs against 95 µs for a PING; with hiredis
+(its C parser, the `redis[hiredis]` extra, now a dependency) 162 µs. The two Redis reads are most of the request, so
+that was the one optimisation worth making.
+
+**So how fast is it?**
+In-process, a request takes 749 µs at p50 and 1,329 µs at p99 (every ml-1m user, hiredis), 72% of it the two Redis
+reads. Over HTTP with one uvicorn process, about 1,150 requests/s is the capacity (closed loop), and an open loop up to
+1,000 requests/s is served at 2.7 ms p50 and 4.2 ms p99 from the scheduled time. More throughput needs more processes:
+the GIL serialises the thread pool, so at 16 requests in flight the pipeline itself waits (8.5 ms at p50 against 0.8 ms
+alone). `results/ml-1m/serving-bench.json`, taken with the load average recorded at 2.

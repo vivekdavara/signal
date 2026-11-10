@@ -437,6 +437,58 @@ filter, which also removes movies the user rated below 4 (all rated before the t
 +0.0131] NDCG@10 (paired): it removes competitors the protocol kept, so the offline protocol slightly understates the
 deployed system.
 
+### Latency (`python scripts/bench_serving.py ml-1m --rates 100,200,400,600,800,1000 --concurrency 1,4,16`, `results/ml-1m/serving-bench.json`)
+
+16:22-16:25, on AC, no sleep, load average 2.0 before and 2.1 after, nothing else above 15% CPU (checked before and
+after). Client and server on the same laptop over loopback; one uvicorn process with sync endpoints on its thread pool;
+k = 10 from 200 candidates; the exact FAISS index. **In-process**, every user once after 1,000 untimed requests:
+
+| stage (µs) | p50 | p95 | p99 | max |
+|---|---|---|---|---|
+| features (Redis, one MULTI/EXEC) | 263 | 535 | 729 | 1,569 |
+| user tower (NumPy) | 12 | 12 | 12 | 23 |
+| retrieve (FAISS flat, 200, exclusions in the search) | 113 | 182 | 231 | 397 |
+| popularity (Redis, one 200-field HMGET) | 274 | 283 | 292 | 332 |
+| rank (8 features, 64-unit MLP) | 56 | 58 | 60 | 68 |
+| filter | 31 | 41 | 44 | 47 |
+| **total, with hiredis** | **749** | **1,079** | **1,329** | 2,327 |
+| total, redis-py's Python parser | 947 | 1,618 | 2,093 | 4,031 |
+
+The two Redis reads are 72% of the request. hiredis, redis-py's C parser (now a dependency), is day 4's one
+optimisation: p50 947 → 749 µs, p99 2,093 → 1,329 µs; with the Python parser the two reads take 372 and 360 µs at p50.
+
+**Over HTTP**, four client processes sharing one schedule; open-loop latencies count from each request's scheduled
+time, after a 2 s paced untimed lead-in; 10 s timed per row:
+
+| closed loop, concurrency | throughput (req/s) | p50 | p99 | server pipeline p50 |
+|---|---|---|---|---|
+| 1 | 575 | 1,650 µs | 2,690 µs | 794 µs |
+| 4 | 1,109 | 3,560 µs | 4,600 µs | 2,032 µs |
+| 16 | 1,148 | 13,749 µs | 20,502 µs | 8,460 µs |
+
+| open loop (req/s) | served (req/s) | failed | p50 | p95 | p99 | client lateness p99 | server pipeline p50 |
+|---|---|---|---|---|---|---|---|
+| 100 | 100 | 0 | 4,599 µs | 5,419 µs | 5,953 µs | 1,130 µs | 1,668 µs |
+| 200 | 200 | 0 | 3,611 µs | 4,192 µs | 4,557 µs | 1,111 µs | 1,187 µs |
+| 400 | 400 | 0 | 2,747 µs | 3,153 µs | 4,177 µs | 1,118 µs | 795 µs |
+| 600 | 600 | 0 | 2,282 µs | 2,758 µs | 3,183 µs | 664 µs | 788 µs |
+| 800 | 800 | 0 | 2,392 µs | 3,079 µs | 8,339 µs | 436 µs | 835 µs |
+| 1,000 | 1,000 | 0 | 2,705 µs | 3,561 µs | 4,166 µs | 285 µs | 1,096 µs |
+
+Capacity is about 1,150 requests/s: one process, its thread pool's requests taking turns on the GIL, so more
+concurrency only adds waiting (the server's own pipeline time grows from 0.8 ms at one request in flight to 8.5 ms at
+16). Up to 1,000 requests/s the open loop keeps up with p99 under 9 ms. Latency *falls* as the rate rises up to 600/s:
+at 100/s the server's pipeline time is twice what it is at 400/s (1,668 against 795 µs at p50) and the client wakes
+about a millisecond late, both signs of a machine that idles between requests, not of load. With one request in flight
+0.86 ms of each is outside the pipeline (1,650 µs end to end, 794 µs inside): FastAPI, HTTP, the thread hand-off and
+the client; the open loop's medians also carry the client's own scheduling.
+
+How these numbers were got matters as much as they do. The first runs of the day were wrong twice. One client process
+(asyncio + httpx) couldn't keep its schedule above about 400/s (46 ms late at 600/s); the load is now split over four.
+Then runs taken while another session's builds and tests shared the laptop (load average 6 to 9) collapsed at 400-1,000
+requests/s, inconsistently; I blamed FAISS's OpenMP threads, and a direct check showed a one-query search never uses
+them (DESIGN.md, "As built (day 4)"). Every result file now records the load average before and after.
+
 ### A/B test simulation (`python scripts/ab_simulate.py ml-1m`, `results/ml-1m/abtest.json`): the click model is SYNTHETIC
 
 Control serves the retrieved order and treatment the re-ranked one (serving filter, top 10): the next movie is in the

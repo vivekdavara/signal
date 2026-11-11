@@ -1,7 +1,28 @@
 # Walkthrough
 
-Questions an interviewer is likely to ask about Signal, with short answers grounded in the code. Day 1 covers the
-data, the evaluation protocol and the baselines; later days add sections.
+Questions an interviewer is likely to ask about Signal, with short answers grounded in the code, one section per day.
+
+## In two minutes
+
+**What is it?** A movie recommender on MovieLens ml-1m, offline and online: a two-tower retriever (in-batch negatives,
+logQ correction, no user-id embedding) feeding FAISS, a listwise ranker over eight features, a Redis feature store
+updated by one Lua script per event, and a FastAPI service that answers in about 0.75 ms in-process.
+
+**What are you proudest of?** That the served path is provably the evaluated one: `scripts/serving_check.py` sends
+every user through the API's code, Redis included, and gets the offline test metrics back to 1e-12. And that every
+number has its command and file next to it, including the ones that went against me.
+
+**Headline numbers?** Test NDCG@10: popularity 0.0193, item-kNN 0.0314, two-tower 0.1220, with the ranker 0.1298.
+The honest version: 31.4% of users rated their test movie in the same second as the one before, where the split's
+order is by movie id; on the other users the two-tower model still leads item-kNN by +0.057 [+0.049, +0.064].
+
+**What was hardest?** Measuring right. A benchmark collapse I first blamed on FAISS threads was another process on
+the laptop (day 4); a load generator that couldn't keep up (day 4); a ranker ablation biased upward because only the
+full model was tuned (day 3); torch and FAISS each bundling OpenMP (day 3).
+
+**What would you do next?** Event-time ordering in the store (late events), more than one serving process, a
+time-based split instead of leave-last-out, and an online test at the size the simulator says it needs (63k users per
+arm).
 
 ## The data (day 1)
 
@@ -427,3 +448,51 @@ reads. Over HTTP with one uvicorn process, about 1,150 requests/s is the capacit
 1,000 requests/s is served at 2.7 ms p50 and 4.2 ms p99 from the scheduled time. More throughput needs more processes:
 the GIL serialises the thread pool, so at 16 requests in flight the pipeline itself waits (8.5 ms at p50 against 0.8 ms
 alone). `results/ml-1m/serving-bench.json`, taken with the load average recorded at 2.
+
+## New users and v1.0.0 (day 5)
+
+**What happens to a user the model has never seen?**
+Their first `POST /events` registers them: `FeatureStore.register` gives the id the next dense index after the
+model's 6,034 users, from a Lua script, once. From then on they are an ordinary user of the store, and the event
+updates their features like anyone's. Until they have a positive, `GET /recommendations` answers with the most popular
+movies they haven't rated (`"source": "popularity"`); from the first positive the two-tower model serves them
+(`"source": "two-tower"`). A GET for an id with no events gets the popular list and registers nothing.
+
+**Why popularity at zero positives and the model at one?**
+The training examples are positives with at least one earlier positive (`twotower.example_positions`), so the tower
+has never been trained on an empty history: its output there is whatever the biases give. One positive is a history
+it was trained on. Measured on held-out users (`scripts/cold_start.py`): with no positives the untrained vector gets
+0.0080 NDCG@10 against popularity's 0.0123 (-0.0043, the interval reaching zero: not worse, not shown better); with
+one positive the tower gets 0.0816 against 0.0123. So the rule costs nothing at zero and switches as soon as the model
+is useful.
+
+**How did you test that the model works for users it never saw?**
+By holding 20% of users out of training entirely (a hash of their id, so it's fixed), retraining the reported
+configuration on the rest, and replaying each held-out user with only their last h positives, as their events would
+arrive. A test spies on training to check it saw exactly the other users' positives. Held-out and trained-on users
+score the same at every h (every interval reaches zero), which is what a tower without a user-id embedding should do.
+The ranker is left out of that measurement because it trained on every user's lists.
+
+**What can go wrong with the registry?**
+Two raw ids sharing an index (it numbers from a counter, never the hash's size, so a deleted entry doesn't free one),
+one id getting two (the script is atomic: 64 concurrent first events of one user get one index, a test), a store
+registered for another model handing out that model's users' indices (the base is stored and checked), and a
+half-applied script (every key's type and the counter are checked before the first write, as in the event script).
+What it doesn't handle: anyone can register ids; a real service would register users through its account system.
+
+**Why cache the popular list, and why for only a second?**
+Reading the whole popularity hash (3,125 fields) is 2.1 of the new-user path's 2.3 ms, three times a known user's
+request. It is the same list for every new user and moves by one count per event, so keeping it for a second costs no
+visible quality: 139 µs at p50 (most of it the store read that finds the user has nothing). A user's own rated movies
+are excluded per request, so their own events show at once. Known users' features are never cached: they change with
+every event and the ranker's skew test depends on reading them fresh.
+
+**What did day 5 change in the earlier days' tests?**
+Two day-4 tests asserted that an unknown user is a 404. That is now the popular list, so the assertion changed; the
+mutant one of them kills (an id between two known ids resolving to a neighbour) is still killed, because the neighbour
+would be served by the two-tower model and `source` says so.
+
+**What's in v1.0.0?**
+The five days, the README's results summary with its caveats, this walkthrough, `CHANGELOG.md`, version 1.0.0 in the
+package and the API, and CI green on the tagged commit.
+

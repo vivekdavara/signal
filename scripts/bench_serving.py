@@ -394,8 +394,13 @@ def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, 
 
 
 def _rates(text: str) -> list[float]:
-    """Comma-separated rates; an empty string is none (a closed-loop-only run)."""
-    return [float(x) for x in text.split(",") if x.strip()]
+    """Comma-separated rates, each a finite number > 0; an empty string is none (a closed-loop-only run)."""
+    if not text.strip():
+        return []
+    rates = [float(x) for x in text.split(",")]
+    if not all(math.isfinite(r) and r > 0 for r in rates):
+        raise argparse.ArgumentTypeError(f"{text!r}: rates must be finite numbers > 0")
+    return rates
 
 
 def _ints(text: str) -> list[int]:

@@ -517,5 +517,7 @@ took ids a GET could never ask for, and 2^63 was a 500; building the exclusions 
 my benchmark's "kept 1 s" rows had never seen the list expire. Its suspicions led to two more changes: popular-list
 users are reported in no experiment arm, and the cold-start write-up now says the held-out users still influenced
 the configuration choice and the catalogue filter. A mutation pass (60 mutants) left 20 survivors; 16 are now killed,
-4 are equivalent.
-
+4 are equivalent. A second round, on those fixes, found four more: three in the registry fix itself (an existing
+ordinal not checked against the counter, the read path skipping a check the write path makes, the last ordinal
+locking every call) and `--workers` respawning failed workers for ever on a bad setting. The lesson is the same as on
+every earlier day: the fix is the least reviewed code, so review the fix.

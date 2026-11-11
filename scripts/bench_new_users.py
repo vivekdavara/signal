@@ -14,8 +14,9 @@ Three kinds of request through ``Recommender.recommend`` (k = 10, hiredis), each
 The popular path runs with ``popular_ttl=0`` (the whole popularity hash read, about 3,000 fields, and sorted on every
 request) and with the default 1 s, so the cost of exactness is measured, not assumed. Requests are **paced** at
 ``--rate`` per second (1,000 by default), lead-in included, so a run of 5,000 timed requests spans about five
-expiries of a 1 s list and its tail includes the reads that refresh it; every run reports how many reads of the
-popularity hash happened among its timed requests (review of day 5: unpaced, 2,200 requests took 0.3 s, and the "kept
+expiries of a 1 s list and its tail includes the reads that refresh it; every run reports how many whole-hash
+reads of popularity (``store.popularity()``, not the known users' HMGET of their candidates) happened among its timed
+requests (review of day 5: unpaced, 2,200 requests took 0.3 s, and the "kept
 1 s" rows measured a list that never expired). Needs the model (``signalrec export``) and the store (``signalrec
 load-store``); take it on a quiet machine.
 """

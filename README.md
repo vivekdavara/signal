@@ -618,7 +618,7 @@ are indices with nothing stored (a store read that finds nothing), "nobody" an i
 read). Runs that can't keep up with the pace (2.3 ms a request) run back to back. Load average 3.0 before and 3.1
 after (Cloudflare WARP and Chrome were busy), 0 s slept, 41 s in all.
 
-| Kind | p50 µs | p95 µs | p99 µs | p99.9 µs | max µs | popularity reads (timed) |
+| Kind | p50 µs | p95 µs | p99 µs | p99.9 µs | max µs | whole-hash reads (timed) |
 |---|---|---|---|---|---|---|
 | known users (the day-4 path) | 735 | 1,134 | 1,453 | 1,971 | 2,348 | 0 |
 | new users, popular list read every time (`popular_ttl` 0) | 2,306 | 2,470 | 2,547 | 2,742 | 3,068 | 5,000 |
@@ -876,9 +876,29 @@ registering leaves the user registered (true, and harmless: the retry gets the s
 Mutation pass: 60 mutants of the registry, the popular path and its cache, the API's registration and
 `cold_start.py`; the existing tests killed 40; of the 20 survivors 16 are killed by `test_survivors_d5.py` (among
 them a popular path cut at `n_candidates` when k is larger, `if not user` registering the model's user 0, popularity
-counting the held-out users, the paired and unpaired intervals swapped) and 4 are equivalent. One round only, for
-time; on every earlier day a second round found bugs in the first round's fixes, so these fixes are the least
-reviewed code in the repository.
+counting the held-out users, the paired and unpaired intervals swapped) and 4 are equivalent.
+
+**Round 2** (one agent at `bb4a08d`, on round 1's fixes and on `--workers`; tests in `tests/review_d5r2/`): **4
+defects**, three of them in round 1's registry fix, as on every earlier day:
+
+- `register()` returned an existing user's ordinal without checking it against the counter (a counter set back would
+  hand that ordinal out again), while `registered()` refused it;
+- `registered()` didn't make the entries-versus-counter check the script makes, so a GET served a registry every
+  event refused;
+- the count check ran before the lookup, so once the last ordinal (10^15) was handed out every call failed, that
+  user's own second event included. All three: one rule now, applied by both paths to the same keys, and a full
+  registry still resolves its users (`adc1e0a`);
+- `serve --workers N` with a bad `--namespace` or `--redis` never exited: only the model was checked in the parent,
+  each worker failed in its factory, and uvicorn's supervisor restarted it every half second (28 tracebacks in 30 s).
+  The parent now builds the whole app first, on either path: `signalrec: ...` and exit 2 (`3d68e04`).
+
+Mutation pass: 27 mutants of the fixes and `--workers`; 15 killed by the existing tests, the 12 survivors (among them
+ordinal 0 mapping to the model's last user, a lossy `:.1f` treatment share in the workers' environment, the factory
+dropping the experiment) killed by `test_survivors_d5r2.py`. Its untested suspicions: the benchmark's "popularity
+reads" count only whole-hash reads (the table's header says so now); `_serve` leaves its five variables in
+`os.environ` (only in-process callers could notice); `_rates` accepted 0, negative and NaN rates (refused now).
+Findings per round: 5 + 16 survivors, then 4 + 12, the second mostly in the first's fixes, so a third round would
+likely find more in this day's code.
 
 ## Design decisions
 

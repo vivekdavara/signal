@@ -213,3 +213,11 @@ def test_nothing_to_measure_is_a_usage_error() -> None:
 def test_an_empty_rate_list_is_a_closed_loop_only_run() -> None:
     assert bs._rates("") == []
     assert bs._rates("100,200") == [100.0, 200.0]
+
+
+@pytest.mark.parametrize("bad", ["0", "-5", "nan", "inf", "100,,200", "fast"])
+def test_bad_rates_are_refused(bad: str) -> None:
+    import argparse
+
+    with pytest.raises((argparse.ArgumentTypeError, ValueError)):
+        bs._rates(bad)

@@ -44,3 +44,15 @@ def test_an_index_with_data_is_not_a_new_user(tmp_path: Path, model: Model, fres
     argv = ["synthetic", "--model", str(tmp_path / "model"), "--redis", URL, "--namespace", fresh.namespace]
     assert bench_new_users.main([*argv, "--requests", "5", "--out", str(tmp_path / "x.json")]) == 1
     assert not (tmp_path / "x.json").exists()
+
+
+def test_requests_are_paced_and_refreshes_counted(model: Model, fresh: FeatureStore) -> None:
+    from signalrec import serving as sv
+
+    rec = sv.Recommender(model, fresh, popular_ttl=0.05)
+    row = bench_new_users.bench(rec, [None] * 60, 10, 5, rate=200.0)  # 70 requests at 200/s: 0.35 s
+    assert row["seconds"] >= 69 / 200
+    # The list expires every 50 ms over the 0.3 s of timed requests: about 6 reads, never one per request.
+    assert 3 <= row["popularity reads while timed"] <= 12
+    assert row["total (µs)"]["p99.9"] >= row["total (µs)"]["p99"]
+    assert "popularity" not in vars(fresh)  # the counting wrapper is gone again

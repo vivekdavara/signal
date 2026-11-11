@@ -12,8 +12,12 @@ Three kinds of request through ``Recommender.recommend`` (k = 10, hiredis), each
   store read for the user.
 
 The popular path runs with ``popular_ttl=0`` (the whole popularity hash read, about 3,000 fields, and sorted on every
-request) and with the default 1 s, so the cost of exactness is measured, not assumed. Needs the model (``signalrec
-export``) and the store (``signalrec load-store``); take it on a quiet machine.
+request) and with the default 1 s, so the cost of exactness is measured, not assumed. Requests are **paced** at
+``--rate`` per second (1,000 by default), lead-in included, so a run of 5,000 timed requests spans about five
+expiries of a 1 s list and its tail includes the reads that refresh it; every run reports how many reads of the
+popularity hash happened among its timed requests (review of day 5: unpaced, 2,200 requests took 0.3 s, and the "kept
+1 s" rows measured a list that never expired). Needs the model (``signalrec export``) and the store (``signalrec
+load-store``); take it on a quiet machine.
 """
 
 from __future__ import annotations
@@ -35,26 +39,55 @@ from signalrec.featurestore import FeatureStore
 from signalrec.serving import POPULAR_TTL, STAGES, Recommender
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench_serving import summary_us
+from bench_serving import percentile, summary_us
 
 
-def bench(rec: Recommender, users: list[int | None], lead_in: int, k: int) -> dict[str, Any]:
-    for u in users[:lead_in]:
-        rec.recommend(u, k=k)
+def bench(rec: Recommender, users: list[int | None], lead_in: int, k: int, rate: float = 1000.0) -> dict[str, Any]:
+    """Each request at its scheduled time (``rate`` per second from the first lead-in request), the first ``lead_in``
+    untimed; counts the store's popularity reads among the timed ones."""
+    if not rate > 0:
+        raise ValueError(f"rate must be > 0, got {rate!r}")
+    reads = [0]
+    real_popularity = rec.store.popularity
+    timing = [False]
+
+    def counted() -> Any:
+        if timing[0]:
+            reads[0] += 1
+        return real_popularity()
+
+    shadowed = "popularity" in vars(rec.store)
+    rec.store.popularity = counted  # type: ignore[method-assign]
     per_stage: dict[str, list[float]] = {s: [] for s in STAGES}
     totals, sources = [], set()
-    for u in users:
-        r = rec.recommend(u, k=k)
-        sources.add(r.source)
-        for s in STAGES:
-            per_stage[s].append(r.seconds[s])
-        totals.append(r.total)
+    start = time.perf_counter()
+    try:
+        for i, u in enumerate([*users[:lead_in], *users]):
+            due = start + i / rate
+            while (wait := due - time.perf_counter()) > 0:
+                time.sleep(wait if wait > 0.002 else 0)
+            timing[0] = i >= lead_in
+            r = rec.recommend(u, k=k)
+            if not timing[0]:
+                continue
+            sources.add(r.source)
+            for s in STAGES:
+                per_stage[s].append(r.seconds[s])
+            totals.append(r.total)
+    finally:
+        if shadowed:
+            rec.store.popularity = real_popularity  # type: ignore[method-assign]
+        else:
+            del rec.store.popularity
     return {
         "requests": len(users),
         "lead-in (untimed)": lead_in,
+        "rate (req/s)": rate,
+        "seconds": time.perf_counter() - start,
+        "popularity reads while timed": reads[0],
         "source": sorted(sources),
         "stages (µs)": {s: summary_us(v) for s, v in per_stage.items()},
-        "total (µs)": summary_us(totals),
+        "total (µs)": {**summary_us(totals), "p99.9": percentile(totals, "99.9") * 1e6},
     }
 
 
@@ -64,8 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", type=Path, help="default: models/<dataset>")
     parser.add_argument("--redis", default="redis://127.0.0.1:6383/0")
     parser.add_argument("--namespace", default="signal")
-    parser.add_argument("--requests", type=int, default=2000, help="timed requests per kind (default 2000)")
-    parser.add_argument("--lead-in", type=int, default=200, help="untimed requests first (default 200)")
+    parser.add_argument("--requests", type=int, default=5000, help="timed requests per kind (default 5000)")
+    parser.add_argument("--lead-in", type=int, default=500, help="untimed requests first (default 500)")
+    parser.add_argument("--rate", type=float, default=1000.0, help="requests per second, paced (default 1000)")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--out", type=Path, help="default: results/<dataset>/new-users-bench.json")
     args = parser.parse_args(argv)
@@ -94,10 +128,14 @@ def main(argv: list[str] | None = None) -> int:
         (f"nobody, popular list kept {POPULAR_TTL:g} s", nobody, POPULAR_TTL),
     ]
     for name, users, ttl in plan:
-        row = bench(Recommender(model, store, popular_ttl=ttl), users, args.lead_in, args.k)
+        row = bench(Recommender(model, store, popular_ttl=ttl), users, args.lead_in, args.k, args.rate)
         runs[name] = row
         total = row["total (µs)"]
-        print(f"{name}: p50 {total['p50']:.0f} µs, p95 {total['p95']:.0f} µs, p99 {total['p99']:.0f} µs", flush=True)
+        print(
+            f"{name}: p50 {total['p50']:.0f} µs, p99 {total['p99']:.0f} µs, p99.9 {total['p99.9']:.0f} µs, "
+            f"max {total['max']:.0f} µs, mean {total['mean']:.1f} µs; {row['popularity reads while timed']} reads",
+            flush=True,
+        )
     result = {
         "command": "python " + " ".join(["scripts/bench_new_users.py", *(sys.argv[1:] if argv is None else argv)]),
         "dataset": args.dataset,

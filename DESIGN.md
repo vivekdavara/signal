@@ -314,15 +314,51 @@ of two directories: a crash between the renames leaves the old one beside it und
   Carlo (A/A false positives, power at the computed size, interval coverage).
 - **What day 4 leaves for day 5.**
   - New users: the store is keyed by the model's dense user index, so a user the prepared data doesn't know is a 404.
-    The tower itself works for any history; a registry of new ids is what's missing.
+    The tower itself works for any history; a registry of new ids is what's missing (built on day 5, below).
   - One process: the GIL serialises the thread pool's requests, so a second core needs a second process (and each
     process holds its own copy of the index: 0.8 MB of vectors here).
   - The popularity read and the features read are separate round trips (stated in `serving.py`).
   - README results, WALKTHROUGH, `v1.0.0`.
 
-## Day 5
+## Day 5: new users, v1.0.0
 
-README with results, WALKTHROUGH.md, `v1.0.0`.
+The plan's day 5 is the README's results, WALKTHROUGH.md and `v1.0.0`. Day 4 left one gap in what the service does: a
+user the prepared data doesn't know was a 404, although the user tower works for any history. Day 5 closes it.
+
+### As built (day 5)
+
+- **A registry of new users** (`FeatureStore.register`, `registered`). The store is keyed by dense user index and the
+  model's users are 0..n-1. A MovieLens id the model doesn't know gets the next index from n up, once, from a Lua
+  script: `<ns>:registry` (id → index), `<ns>:registry:count` (a counter: a deleted entry never frees its index for
+  someone else), `<ns>:registry:base` (n, written with the first registration; a store registered for another model is
+  refused). Like the event script, it checks every key's type and the counter before its first write. `registered`
+  only reads (one MULTI/EXEC), so a GET never registers anyone.
+- **Users with no positives get the most popular movies** (`serving.py`, `_most_popular`). The two-tower model trained
+  only on positives with at least one earlier positive (`twotower.example_positions`), so its vector for an empty
+  history is untrained. Until a user's first positive, a request reads the store's popularity whole (one HGETALL),
+  orders it with ties to the smaller index (the offline baseline's order), removes rated movies and excluded genres,
+  and skips the ranker (its features include the retrieval score). `user=None` is an id with no events at all:
+  nothing is read for it. `Recommendation.source` says which path answered (`"two-tower"` or `"popularity"`).
+- **The popular list is kept for a second** (`popular_ttl`, `signalrec serve --popular-ttl`). The HGETALL was 2.0 of
+  the path's 2.3 ms; the read and its order are now replaced whole every `popular_ttl` seconds (1 by default, 0 reads
+  every time). Exclusions stay per request. The cost: the list for users we know nothing about can lag the events by
+  up to a second.
+- **The API** (`api.py`). `GET /recommendations/{id}` for an unknown id serves the popular list; `POST /events` for
+  one registers it, then records the event as for anyone else. The movie is checked first: an event for a movie
+  outside the catalogue is a 404 and registers nobody. Responses carry `source`, and events `new_user`.
+- **Measured on users the model never saw** (`scripts/cold_start.py`). 20% of ml-1m's users (by a hash of their id)
+  are held out of training entirely; the reported configuration is retrained on the rest; each held-out user is
+  replayed with their last h positives (h = 0, 1, 2, 3, all) and their test movie ranked by the served NumPy tower and
+  by popularity, each excluding only those h movies. Retrieval order only: the ranker trained on every user's lists.
+- **Measured cost** (`scripts/bench_new_users.py`): known users, new users and nobody in-process, with the popular list
+  read every time and kept for a second.
+- `v1.0.0`: README results summary and reading order, WALKTHROUGH day 5, `CHANGELOG.md`.
+
+### What is still left
+
+- Late events: the store appends in arrival order (day 3).
+- More than one process: the GIL serialises one process's thread pool (day 4).
+- The registry has no bound and no authentication: anyone can register ids (README, "Limitations").
 
 ## Testing
 
@@ -334,6 +370,12 @@ README with results, WALKTHROUGH.md, `v1.0.0`.
 - Item-kNN against a direct dense computation on random matrices; popularity by hand.
 - CI runs everything on every push and then the whole pipeline on the real `ml-latest-small`, downloaded from
   GroupLens and cached by its SHA-256.
+- Days 2-5: the two-tower model's pieces against hand computations and PyTorch's own (the NumPy tower within 1e-6);
+  the feature store against the offline features for every user, then the ranker's inputs bit for bit (the skew
+  test); the request path against the offline test metrics (`scripts/serving_check.py`, also on synthetic data
+  through the CLI); Redis scripts against damaged keys (nothing written) and concurrent callers; the A/B statistics
+  by Monte Carlo; every script end to end on synthetic data. Each day's review left its findings as tests
+  (`tests/review_d*`), including tests that kill the surviving mutants of a mutation run.
 
 ## Ports
 

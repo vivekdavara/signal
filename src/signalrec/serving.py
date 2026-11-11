@@ -18,9 +18,12 @@ Stages, each timed:
 **New users (day 5).** A user with no positives yet (a new MovieLens id, or one who has only rated movies below the
 positive threshold) gets the most popular eligible movies instead: the two-tower model was trained only on positives
 that had at least one earlier positive, so its vector for an empty history was never trained (``scripts/cold_start.py``
-measures both). Popularity is read whole (one HGETALL) and ties go to the smaller movie index, as the offline
-baseline's; the ranker is skipped, as its features include the retrieval score. ``user=None`` is a user the store has
-never seen: nothing to read, nothing rated. ``Recommendation.source`` says which path answered.
+measures both). Popularity is read whole (one HGETALL, about 2 ms on ml-1m) and ties go to the smaller movie index, as
+the offline baseline's; the ranker is skipped, as its features include the retrieval score. The read and its order
+are kept for ``popular_ttl`` seconds (1 by default; 0 reads every time), so the popular list can be that much behind
+the events: a new user's list, not a personal one (``scripts/bench_new_users.py`` measures both settings).
+``user=None`` is a user the store has never seen: nothing to read, nothing rated. ``Recommendation.source`` says which
+path answered.
 
 The features read in stage 1 and the popularity in stage 4 are separate reads, so an event landing between them is
 seen by one and not the other; both are counts that move by one per event, so a request ranks with features at most
@@ -30,7 +33,7 @@ one event apart.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -46,6 +49,7 @@ IntArray = npt.NDArray[np.int64]
 Float64Array = npt.NDArray[np.float64]
 
 N_CANDIDATES = 200
+POPULAR_TTL = 1.0  # seconds the popular list is kept for users with no positives
 STAGES = ("features", "user tower", "retrieve", "popularity", "rank", "filter")
 EXCLUDE = ("rated", "liked")
 SOURCES = ("two-tower", "popularity")
@@ -64,6 +68,15 @@ class Recommendation:
         return sum(self.seconds.values())
 
 
+@dataclass(frozen=True)
+class _Popular:
+    """The store's popularity as of one read, and the movies in popular order (ties to the smaller index)."""
+
+    expires: float  # on the Recommender's clock (time.monotonic)
+    counts: IntArray
+    order: IntArray
+
+
 class Recommender:
     def __init__(
         self,
@@ -71,10 +84,19 @@ class Recommender:
         store: FeatureStore,
         n_candidates: int = N_CANDIDATES,
         index: rt.IndexSpec | None = None,
+        popular_ttl: float = POPULAR_TTL,
+        clock: Callable[[], float] = time.monotonic,  # for the popular list's TTL; the tests pass their own
     ) -> None:
         model.check()
         if type(n_candidates) is not int or n_candidates < 1:
             raise ValueError(f"n_candidates must be an integer >= 1, got {n_candidates!r}")
+        if isinstance(popular_ttl, bool) or not isinstance(popular_ttl, int | float) or not 0 <= popular_ttl < 3600:
+            raise ValueError(f"popular_ttl must be a number of seconds in [0, 3600), got {popular_ttl!r}")
+        self.popular_ttl = float(popular_ttl)
+        self._clock = clock
+        # Replaced whole, never mutated: a thread reads the old or the new one. Two threads finding it expired both
+        # read Redis once; that is all a race can cost.
+        self._popular_cache: _Popular | None = None
         if store.catalogue.n_items != model.n_items or store.catalogue.genre_names != model.catalogue.genre_names:
             raise ValueError("the feature store's catalogue is not the model's")
         # The tower reads the last max_history positives from the store's recent list, which keeps store.recent of
@@ -178,14 +200,14 @@ class Recommender:
         clock = time.perf_counter
         seconds["user tower"] = 0.0
         t = clock()
-        popularity = self.store.popularity()
+        popular = self._popular()
+        popularity = popular.counts
         seconds["popularity"] = clock() - t
 
         t = clock()
-        order = np.argsort(-popularity, kind="stable")
         eligible = np.ones(self.model.n_items, dtype=bool)
         eligible[excluded] = False
-        candidates = order[eligible[order]][:n].astype(np.int64)
+        candidates = popular.order[eligible[popular.order]][:n].astype(np.int64)
         seconds["retrieve"] = clock() - t
         seconds["rank"] = 0.0
 
@@ -196,6 +218,16 @@ class Recommender:
         timed = {stage: seconds[stage] for stage in STAGES}
         scores = popularity[movies].astype(np.float64)
         return Recommendation(movies, scores, len(candidates), timed, source="popularity")
+
+    def _popular(self) -> _Popular:
+        now = self._clock()
+        cached = self._popular_cache
+        if cached is not None and now < cached.expires:
+            return cached
+        counts = self.store.popularity()
+        fresh = _Popular(now + self.popular_ttl, counts, np.argsort(-counts, kind="stable").astype(np.int64))
+        self._popular_cache = fresh
+        return fresh
 
     def _check(self, movies: IntArray, excluded: IntArray, genre_ids: list[int]) -> None:
         bad = np.isin(movies, excluded)

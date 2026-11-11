@@ -251,3 +251,44 @@ def test_nobody_reads_nothing_from_the_store(
 
     monkeypatch.setattr(fresh, "serving_view", boom)
     assert rec.recommend(None, k=5).source == "popularity"
+
+
+def test_the_popular_list_is_read_once_per_ttl(
+    fresh: FeatureStore, model: Model, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reads = []
+    real = fresh.popularity
+
+    def counting() -> fe.IntArray:
+        reads.append(1)
+        return real()
+
+    monkeypatch.setattr(fresh, "popularity", counting)
+    now = [1000.0]
+    rec = sv.Recommender(model, fresh, popular_ttl=1.0, clock=lambda: now[0])
+    first = rec.recommend(None, k=5)
+    assert len(reads) == 1
+    fresh.record(fe.Event(40, int(model.n_items - 1), 0))  # the last movie becomes the most popular
+    now[0] += 0.5
+    assert rec.recommend(None, k=5).movies.tolist() == first.movies.tolist()  # within the TTL: the cached list
+    assert len(reads) == 1
+    # Exclusions are per request even from the cached order: user 41's rated movie is excluded at once.
+    fresh.record_rating(fe.Event(41, int(first.movies[0]), 0))
+    assert int(first.movies[0]) not in rec.recommend(41, k=5).movies.tolist()
+    assert len(reads) == 1
+    now[0] += 0.5  # the TTL is up
+    assert rec.recommend(None, k=5).movies[0] == model.n_items - 1
+    assert len(reads) == 2
+
+
+def test_a_zero_ttl_reads_every_time(fresh: FeatureStore, model: Model, monkeypatch: pytest.MonkeyPatch) -> None:
+    rec = sv.Recommender(model, fresh, popular_ttl=0)
+    assert rec.recommend(None, k=3).movies.tolist() == [0, 1, 2]  # nobody has liked anything: index order
+    fresh.record(fe.Event(50, 9, 0))
+    assert rec.recommend(None, k=3).movies.tolist() == [9, 0, 1]
+
+
+@pytest.mark.parametrize("ttl", [-1, 3600, float("nan"), float("inf"), True, "1"])
+def test_bad_ttls_are_refused(fresh: FeatureStore, model: Model, ttl: object) -> None:
+    with pytest.raises(ValueError):
+        sv.Recommender(model, fresh, popular_ttl=ttl)  # type: ignore[arg-type]

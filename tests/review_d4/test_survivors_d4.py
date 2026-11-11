@@ -51,7 +51,7 @@ def test_a_rating_at_min_rating_is_a_positive_and_one_below_is_not(model: Model,
     seen = set(store.user(9).seen.tolist())
     movies = [m for m in range(model.n_items) if m not in seen][:2]
     at = api.post("/events", json={"user": user, "movie": int(model.item_raw_ids[movies[0]]), "rating": 4})
-    assert at.json() == {"applied": True, "positive": True}
+    assert at.json() == {"applied": True, "positive": True, "new_user": False}
     below = api.post("/events", json={"user": user, "movie": int(model.item_raw_ids[movies[1]]), "rating": 3.5})
     assert below.json()["positive"] is False
 
@@ -188,14 +188,18 @@ def test_ids_between_known_ids_are_unknown(model: Model, store: FeatureStore) ->
     """Kills tower.py:178 and tower.py:184 dropping ``or self.item_raw_ids[at] != raw`` (and the user one): an unknown
     MovieLens id that sorts between two known ones resolves to the next known movie or user, so a POST /events for a
     movie not in the catalogue records another movie, and GET /recommendations for an unknown user serves another
-    user's list. The existing tests use max + 1 only, which the ``at == len`` branch catches."""
+    user's list. The existing tests use max + 1 only, which the ``at == len`` branch catches.
+
+    Day 5: an unknown user is no longer a 404 but a new user, who gets the popular list until their first positive;
+    the mutant would serve the next known user's two-tower list instead."""
     movie, user = _gap(model.item_raw_ids), _gap(model.user_raw_ids)
     with pytest.raises(KeyError):
         model.movie_index(movie)
     with pytest.raises(KeyError):
         model.user_index(user)
     api = _api(model, store)
-    assert api.get(f"/recommendations/{user}").status_code == 404
+    r = api.get(f"/recommendations/{user}")
+    assert r.status_code == 200 and r.json()["source"] == "popularity"
     known_user = int(model.user_raw_ids[0])
     assert api.post("/events", json={"user": known_user, "movie": movie, "rating": 5}).status_code == 404
 

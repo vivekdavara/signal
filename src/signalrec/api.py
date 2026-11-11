@@ -9,9 +9,12 @@
   idempotent: a retried request changes nothing the second time, and the response says whether it applied.
 - ``GET /health``: Redis answers, and which model is served.
 
-Users and movies are MovieLens ids. A user the prepared data doesn't know is a 404 (the store is keyed by the model's
-dense user index; new users are a limitation the README states), as is a movie outside the catalogue. Redis being
-unreachable is a 503; values in Redis the store didn't write are a 500 naming them.
+Users and movies are MovieLens ids. **New users (day 5):** a user id the prepared data doesn't know is registered by
+its first event (``FeatureStore.register``: the next dense index after the model's users, once, atomically), and from
+then on is served like any other user. Until their first positive, a user gets the most popular movies they haven't
+rated (``"source": "popularity"`` in the response; ``serving.py`` says why). A GET never registers anyone: an id with
+no events at all gets the popular list. A movie outside the catalogue is a 404, and such an event registers nobody.
+Redis being unreachable is a 503; values in Redis the store didn't write are a 500 naming them.
 """
 
 from __future__ import annotations
@@ -68,11 +71,13 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
         errors = [{key: e[key] for key in ("loc", "msg", "type") if key in e} for e in exc.errors()]
         return JSONResponse(status_code=422, content={"detail": errors})
 
-    def dense_user(raw: int) -> int:
+    n_users = len(model.user_raw_ids)  # new users are numbered from here (FeatureStore.register)
+
+    def known_user(raw: int) -> int | None:
         try:
             return model.user_index(raw)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc.args[0])) from None
+        except KeyError:
+            return None
 
     def dense_movie(raw: int) -> int:
         try:
@@ -109,9 +114,11 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
         user, k = int(user_text), int(k_text)
         if not 1 <= k <= MAX_K:
             raise unprocessable(["query", "k"], f"k must be between 1 and {MAX_K}, got {k}")
-        dense = dense_user(user)
         arm = None if experiment is None else abtest.assign(experiment, user)
         try:
+            dense = known_user(user)
+            if dense is None:
+                dense = store.registered(user, n_users)  # None: no events yet, the popular list
             rec = recommender.recommend(dense, k=k, exclude_genres=exclude_genre or (), rank=arm != abtest.CONTROL)
         except KeyError as exc:  # an unknown genre
             raise unprocessable(["query", "exclude_genre"], str(exc.args[0])) from None
@@ -127,16 +134,20 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
             }
             for m, score in zip(rec.movies.tolist(), rec.scores.tolist(), strict=True)
         ]
-        return {"user": user, "k": k, "arm": arm, "items": items}
+        return {"user": user, "k": k, "arm": arm, "source": rec.source, "items": items}
 
     @app.post("/events")
     def events(event: EventIn) -> dict[str, Any]:
-        dense = Event(dense_user(event.user), dense_movie(event.movie), event.time or 0)
+        movie = dense_movie(event.movie)  # before registering: an event for no movie registers nobody
         positive = float(event.rating) >= min_rating
         try:
+            user, new_user = known_user(event.user), False
+            if user is None:
+                user, new_user = store.register(event.user, n_users)
+            dense = Event(user, movie, event.time or 0)
             applied = store.record(dense) if positive else store.record_rating(dense)
         except (redis.RedisError, FeatureStoreError) as exc:
             raise store_errors(exc) from None
-        return {"applied": applied, "positive": positive}
+        return {"applied": applied, "positive": positive, "new_user": new_user}
 
     return app

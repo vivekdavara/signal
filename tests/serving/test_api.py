@@ -78,18 +78,30 @@ def test_bad_k_is_a_422(api: TestClient, model: Model, k: object) -> None:
     assert api.get(f"/recommendations/{raw_user(model, 0)}", params={"k": k}).status_code == 422
 
 
-def test_unknown_users_are_a_404(api: TestClient, model: Model) -> None:
+def test_a_user_with_no_events_gets_the_popular_list_and_is_not_registered(
+    api: TestClient, model: Model, store: FeatureStore
+) -> None:
     missing = int(model.user_raw_ids.max()) + 1
-    r = api.get(f"/recommendations/{missing}")
-    assert r.status_code == 404 and str(missing) in r.json()["detail"]
+    r = api.get(f"/recommendations/{missing}", params={"k": 7})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "popularity" and body["user"] == missing
+    popularity = store.popularity()
+    want = sorted(range(model.n_items), key=lambda m: (-int(popularity[m]), m))[:7]
+    assert [item["movie"] for item in body["items"]] == [int(model.item_raw_ids[m]) for m in want]
+    assert store.registered(missing, len(model.user_raw_ids)) is None  # a GET registers nobody
     assert api.get("/recommendations/abc").status_code == 422
+
+
+def test_known_users_are_served_by_the_two_tower_model(api: TestClient, model: Model) -> None:
+    assert api.get(f"/recommendations/{raw_user(model, 0)}").json()["source"] == "two-tower"
 
 
 def test_a_positive_event_removes_the_movie_and_a_retry_is_a_no_op(api: TestClient, model: Model) -> None:
     user = raw_user(model, 5)
     top = api.get(f"/recommendations/{user}").json()["items"][0]["movie"]
     r = api.post("/events", json={"user": user, "movie": top, "rating": 5.0, "time": 2_000_000_000})
-    assert r.status_code == 200 and r.json() == {"applied": True, "positive": True}
+    assert r.status_code == 200 and r.json() == {"applied": True, "positive": True, "new_user": False}
     assert api.post("/events", json={"user": user, "movie": top, "rating": 5.0}).json()["applied"] is False
     after = [item["movie"] for item in api.get(f"/recommendations/{user}").json()["items"]]
     assert top not in after
@@ -100,7 +112,7 @@ def test_a_low_rating_only_filters(api: TestClient, model: Model, store: Feature
     before = store.user(6)
     top = api.get(f"/recommendations/{user}").json()["items"][0]["movie"]
     r = api.post("/events", json={"user": user, "movie": top, "rating": 2})
-    assert r.json() == {"applied": True, "positive": False}
+    assert r.json() == {"applied": True, "positive": False, "new_user": False}
     assert store.user(6) == before
     assert top not in [item["movie"] for item in api.get(f"/recommendations/{user}").json()["items"]]
 
@@ -124,12 +136,48 @@ def test_malformed_events_are_a_422(api: TestClient, body: dict[str, object]) ->
     assert api.post("/events", json=body).status_code == 422
 
 
-def test_events_for_unknown_users_or_movies_are_a_404(api: TestClient, model: Model) -> None:
+def test_events_for_unknown_movies_are_a_404_and_register_nobody(
+    api: TestClient, model: Model, store: FeatureStore
+) -> None:
     missing_movie = int(model.item_raw_ids.max()) + 1
     r = api.post("/events", json={"user": raw_user(model, 0), "movie": missing_movie, "rating": 5})
     assert r.status_code == 404 and str(missing_movie) in r.json()["detail"]
-    missing_user = int(model.user_raw_ids.max()) + 1
-    assert api.post("/events", json={"user": missing_user, "movie": 1, "rating": 5}).status_code == 404
+    new_user = int(model.user_raw_ids.max()) + 1
+    assert api.post("/events", json={"user": new_user, "movie": missing_movie, "rating": 5}).status_code == 404
+    assert store.registered(new_user, len(model.user_raw_ids)) is None
+
+
+def test_a_new_user_is_registered_by_their_first_event_and_then_personalised(
+    api: TestClient, model: Model, store: FeatureStore
+) -> None:
+    n_users = len(model.user_raw_ids)
+    new_user = int(model.user_raw_ids.max()) + 10
+    first = api.get(f"/recommendations/{new_user}").json()
+    assert first["source"] == "popularity"
+    disliked = first["items"][0]["movie"]
+    r = api.post("/events", json={"user": new_user, "movie": disliked, "rating": 1})
+    assert r.json() == {"applied": True, "positive": False, "new_user": True}
+    assert store.registered(new_user, n_users) == n_users
+    after_dislike = api.get(f"/recommendations/{new_user}").json()
+    assert after_dislike["source"] == "popularity"  # still no positives
+    assert [i["movie"] for i in after_dislike["items"]] == [i["movie"] for i in first["items"][1:]] + [
+        after_dislike["items"][-1]["movie"]
+    ]
+    liked = after_dislike["items"][3]["movie"]
+    r = api.post("/events", json={"user": new_user, "movie": liked, "rating": 5})
+    assert r.json() == {"applied": True, "positive": True, "new_user": False}
+    personal = api.get(f"/recommendations/{new_user}").json()
+    assert personal["source"] == "two-tower"
+    served = {i["movie"] for i in personal["items"]}
+    assert disliked not in served and liked not in served
+    # Their features are exactly one positive's, under the new index.
+    features = store.user(n_users)
+    assert features.positives == 1 and features.recent.tolist() == [model.movie_index(liked)]
+    # A second new user gets the next index; the first keeps theirs.
+    other = new_user + 1
+    assert api.post("/events", json={"user": other, "movie": liked, "rating": 4}).json()["new_user"] is True
+    assert store.registered(other, n_users) == n_users + 1
+    assert store.registered(new_user, n_users) == n_users
 
 
 def test_health(api: TestClient, model: Model) -> None:

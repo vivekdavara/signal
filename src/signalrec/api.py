@@ -27,6 +27,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt
 
+import signalrec
 from signalrec import abtest
 from signalrec.features import Event
 from signalrec.featurestore import FeatureStoreError
@@ -62,7 +63,7 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
     model = recommender.model
     store = recommender.store
     min_rating = float(model.info.get("min_rating", 4.0))
-    app = FastAPI(title="Signal", version="0.1.0")
+    app = FastAPI(title="Signal", version=signalrec.__version__)
     app.state.recommender = recommender  # what it serves with, for the tests and for anyone embedding the app
 
     @app.exception_handler(RequestValidationError)

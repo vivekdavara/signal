@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "signalrec"
-version = "0.1.0"
+version = "1.0.0"
 description = "A movie recommender with online serving: MovieLens baselines, a two-tower retriever, FAISS retrieval, a ranking stage and a Redis feature store behind FastAPI."
 readme = "README.md"
 license = "MIT"

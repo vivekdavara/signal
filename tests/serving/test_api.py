@@ -233,3 +233,9 @@ def test_every_422_has_the_same_shape(api: TestClient, model: Model) -> None:
         assert r.status_code == 422
         detail = r.json()["detail"]
         assert isinstance(detail, list) and detail and {"loc", "msg", "type"} <= set(detail[0])
+
+
+def test_the_api_reports_the_package_version(api: TestClient) -> None:
+    import signalrec
+
+    assert api.get("/openapi.json").json()["info"]["version"] == signalrec.__version__ == "1.0.0"

@@ -3,4 +3,4 @@
 The package is called ``signalrec`` because ``signal`` is a standard-library module.
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

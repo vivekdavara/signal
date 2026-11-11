@@ -309,7 +309,7 @@ def start_server(args: argparse.Namespace) -> subprocess.Popen[bytes]:
     command = [sys.executable, "-m", "signalrec.cli", "serve", args.dataset, "--port", str(args.port)]
     if args.model:
         command += ["--model", str(args.model)]
-    command += ["--redis", args.redis, "--namespace", args.namespace]
+    command += ["--redis", args.redis, "--namespace", args.namespace, "--workers", str(args.workers)]
     proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -419,10 +419,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=10.0, help="seconds before a request counts as failed")
     parser.add_argument("--client-processes", type=int, default=4, help="processes sending the HTTP load (default 4)")
     parser.add_argument("--no-http", action="store_true", help="the in-process stages only")
+    parser.add_argument("--no-stages", action="store_true", help="the HTTP runs only")
+    parser.add_argument("--workers", type=int, default=1, help="server processes (signalrec serve --workers)")
     parser.add_argument("--trace", type=Path, help="write every timed open-loop request's due/sent/done times here")
     parser.add_argument("--out", type=Path, help="default: results/<dataset>/serving-bench.json")
     args = parser.parse_args(argv)
 
+    if args.workers < 1:
+        parser.error("--workers must be >= 1")
+    if args.no_http and args.no_stages:
+        parser.error("--no-http and --no-stages leave nothing to measure")
     model = tw.load(args.model or Path("models") / args.dataset)
     prepared = prepare.load(args.data_dir / "processed" / args.dataset, args.dataset)
     users = np.random.default_rng(0).permutation(prepared.n_users).tolist()
@@ -443,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
         "index": rec.retriever.spec.label(),
     }
     result["stages, in-process"] = {}
-    for name, parser_class in PARSERS.items():
+    for name, parser_class in [] if args.no_stages else PARSERS.items():
         row = bench_stages(recommender(parser_class), users, args.lead_in_requests, args.k)
         result["stages, in-process"][name] = row
         total = row["total (µs)"]
@@ -470,7 +476,11 @@ def main(argv: list[str] | None = None) -> int:
         "machine": platform.machine(),
         "system": platform.system(),
         "cpus": os.cpu_count(),
-        "server": "one uvicorn process, sync endpoints on its thread pool; client and server on the same machine",
+        "server": (
+            f"{args.workers} uvicorn process{'es' if args.workers > 1 else ''}, sync endpoints on each one's thread "
+            "pool; client and server on the same machine"
+        ),
+        "server workers": args.workers,
         "redis-py": redis.__version__,
         "server's parser": "hiredis (redis-py's default when it is installed)",
     }

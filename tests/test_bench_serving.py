@@ -174,3 +174,37 @@ def test_fast_failures_never_make_the_percentiles_look_better() -> None:
     assert with_errors["failed"] == 6
     assert with_errors["latency from scheduled time (µs)"]["p50"] >= 2_000  # not pulled down by instant errors
     assert without["latency from scheduled time (µs)"]["p99"] is not None
+
+
+def test_the_server_is_started_with_the_requested_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    import argparse
+    import subprocess
+
+    import httpx
+
+    commands: list[list[str]] = []
+
+    class FakeProc:
+        stderr = None
+
+        def poll(self) -> None:
+            return None
+
+    def popen(command: list[str], **_: object) -> FakeProc:
+        commands.append(command)
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(200))
+    args = argparse.Namespace(dataset="ml-1m", port=8116, model=None, redis="redis://x", namespace="signal", workers=3)
+    bs.start_server(args)
+    (command,) = commands
+    assert command[command.index("--workers") + 1] == "3"
+
+
+def test_nothing_to_measure_is_a_usage_error() -> None:
+    with pytest.raises(SystemExit) as exc:
+        bs.main(["ml-1m", "--no-http", "--no-stages"])
+    assert exc.value.code == 2
+    with pytest.raises(SystemExit):
+        bs.main(["ml-1m", "--workers", "0"])

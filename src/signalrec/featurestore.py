@@ -99,8 +99,12 @@ return 1
 # numbers them, so a deleted entry can't make two users share an index. The base is written with the first
 # registration and must match afterwards: a store loaded for one model can't hand out indices that another model's
 # prepared users already have. The three keys exist together or not at all, and the counter is at least the number of
-# entries: a lost counter or base would re-issue an index someone holds (review of day 5), so either is an error.
-# Everything is checked before the first write.
+# entries: a lost counter or base would re-issue an index someone holds (review of day 5), so either is an error, and
+# so is an entry whose ordinal the counter never reached (round 2: a counter set back would re-issue it). Counts are
+# digits without leading zeros up to 10^15, the last ordinal handed out; at 10^15 the registry is full, but its users
+# still resolve (round 2: the check had refused the last user's own second event). ``registered`` applies the same
+# rules to the same keys (round 2: it had served a registry every event refused). Everything is checked before the
+# first write.
 _REGISTER = """
 local expected = {'hash', 'string', 'string'}
 for i = 1, 3 do
@@ -113,9 +117,12 @@ local base = redis.call('GET', KEYS[3])
 if base and base ~= ARGV[2] then
   return redis.error_reply('BADBASE the registry numbers new users from ' .. base .. ', not ' .. ARGV[2])
 end
+local function ordinal_ok(v)
+  return string.match(v, '^[1-9]%d*$') and string.len(v) <= 16 and tonumber(v) <= 1e15
+end
 local count = redis.call('GET', KEYS[2])
-if count and not (string.match(count, '^%d+$') and string.len(count) <= 15) then
-  return redis.error_reply('BADCOUNT ' .. KEYS[2] .. ' is not a count below 10^15')
+if count and not ordinal_ok(count) then
+  return redis.error_reply('BADCOUNT ' .. KEYS[2] .. ' is not a count from 1 to 10^15')
 end
 local entries = redis.call('HLEN', KEYS[1])
 if (entries > 0 or count or base) and not (count and base) then
@@ -126,7 +133,13 @@ if count and tonumber(count) < entries then
 end
 local ordinal = redis.call('HGET', KEYS[1], ARGV[1])
 if ordinal then
+  if not (ordinal_ok(ordinal) and tonumber(ordinal) <= tonumber(count)) then
+    return redis.error_reply('BADREGISTRY user ' .. ARGV[1] .. ' has ordinal ' .. ordinal .. ', count ' .. count)
+  end
   return {ordinal, 0}
+end
+if count and tonumber(count) >= 1e15 then
+  return redis.error_reply('BADCOUNT ' .. KEYS[2] .. ' is at 10^15: the registry is full')
 end
 if not base then
   redis.call('SET', KEYS[3], ARGV[2])
@@ -135,6 +148,7 @@ local n = redis.call('INCR', KEYS[2])
 redis.call('HSET', KEYS[1], ARGV[1], n)
 return {n, 1}
 """
+MAX_ORDINAL = 10**15
 # Bases up to 2^62 and at most 10^15 new users keep every index inside int64.
 MAX_BASE = 2**62
 
@@ -203,32 +217,49 @@ class FeatureStore:
         return self._dense(ordinal_raw, None, raw, base), bool(created)
 
     def registered(self, raw: int, base: int) -> int | None:
-        """The dense index of new user ``raw`` if one was allocated, else None. Reads only: a GET never registers."""
+        """The dense index of new user ``raw`` if one was allocated, else None. Reads only: a GET never registers. A
+        registry ``register`` would refuse is refused here too."""
         self._check_registry_args(raw, base)
         registry, count_key, base_key = self._registry_keys
         pipe = self.client.pipeline(transaction=True)
         pipe.hget(registry, int(raw))
         pipe.get(count_key)
         pipe.get(base_key)
+        pipe.hlen(registry)
         try:
-            ordinal_raw, count_raw, stored_base = pipe.execute()
+            ordinal_raw, count_raw, stored_base, entries = pipe.execute()
         except redis.ResponseError as exc:
             raise FeatureStoreError(f"registry: {exc}") from None
         if stored_base is not None and self._text(stored_base) != str(int(base)):
             raise FeatureStoreError(
                 f"registry: it numbers new users from {self._text(stored_base)}, not {base} (another model's store?)"
             )
+        if (entries or count_raw is not None or stored_base is not None) and (count_raw is None or stored_base is None):
+            raise FeatureStoreError(f"registry: {entries} entries but no base or counter")
+        count = None if count_raw is None else self._ordinal(count_raw, "the registry's count")
+        if count is not None and count < entries:
+            raise FeatureStoreError(f"registry: {entries} entries, more than its count {count}")
         if ordinal_raw is None:
             return None
-        if stored_base is None or count_raw is None:
-            raise FeatureStoreError(f"registry: user {raw} is registered but the registry has no base or counter")
-        return self._dense(ordinal_raw, self._int(count_raw, "the registry's count"), raw, base)
+        return self._dense(ordinal_raw, count, raw, base)
+
+    def _ordinal(self, raw_value: Any, what: str) -> int:
+        """Digits without a leading zero, 1 to 10^15, as the script requires."""
+        text = self._text(raw_value)
+        if not (text.isascii() and text.isdigit() and text[0] != "0" and len(text) <= 16 and int(text) <= MAX_ORDINAL):
+            raise FeatureStoreError(f"registry: {what} is {text!r}, not a count from 1 to 10^15")
+        return int(text)
 
     def _dense(self, ordinal_raw: Any, count: int | None, raw: int, base: int) -> int:
-        """base + ordinal - 1, for an ordinal in [1, count] (the script checked the count when it returned one)."""
-        ordinal = self._int(ordinal_raw, f"new user {raw}'s ordinal")
+        """base + ordinal - 1, for an ordinal in [1, count] (``register``'s script has already checked it against the
+        count, and passes None)."""
+        try:
+            ordinal = self._ordinal(ordinal_raw, f"new user {raw}'s ordinal")
+        except FeatureStoreError:
+            ordinal = -1
         if ordinal < 1 or (count is not None and ordinal > count):
-            raise FeatureStoreError(f"registry: new user {raw} has ordinal {ordinal}, outside 1..{count}")
+            text = self._text(ordinal_raw)
+            raise FeatureStoreError(f"registry: new user {raw} has ordinal {text}, outside 1..{count or MAX_ORDINAL}")
         return int(base) + ordinal - 1
 
     def _args(self, event: Event) -> tuple[list[str], list[int]]:

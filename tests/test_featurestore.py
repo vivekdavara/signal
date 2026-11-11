@@ -488,3 +488,39 @@ def test_indices_far_past_the_model_are_exact(store: FeatureStore, client: redis
     assert store.registered(1, big) == big
     with pytest.raises(ValueError):
         store.register(3, big + 1)
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        {"registry": {"7": "1", "8": "2"}, "registry:count": "1", "registry:base": "60"},  # more entries than counted
+        {"registry": {"7": "1"}, "registry:count": "0001", "registry:base": "60"},  # a count with leading zeros
+        {"registry": {"7": "1"}, "registry:base": "60"},  # no counter
+    ],
+)
+def test_both_paths_refuse_a_damaged_registry_for_anyone(
+    store: FeatureStore, client: redis.Redis, setup: dict[str, object]
+) -> None:
+    """Round 2 of the day-5 review: registered() must refuse what register() refuses, also for an id not in it."""
+    for suffix, value in setup.items():
+        key = f"{store.namespace}:{suffix}"
+        if isinstance(value, dict):
+            client.hset(key, mapping=value)
+        else:
+            client.set(key, str(value))
+    for raw in (7, 99):
+        with pytest.raises(FeatureStoreError):
+            store.register(raw, 60)
+        with pytest.raises(FeatureStoreError):
+            store.registered(raw, 60)
+
+
+def test_a_full_registry_still_resolves_its_users(store: FeatureStore, client: redis.Redis) -> None:
+    client.set(f"{store.namespace}:registry:count", str(10**15 - 1))
+    client.set(f"{store.namespace}:registry:base", "60")
+    assert store.register(5, 60) == (60 + 10**15 - 1, True)  # the last ordinal
+    assert store.register(5, 60) == (60 + 10**15 - 1, False)
+    assert store.registered(5, 60) == 60 + 10**15 - 1
+    with pytest.raises(FeatureStoreError, match="full"):
+        store.register(6, 60)
+    assert store.registered(6, 60) is None

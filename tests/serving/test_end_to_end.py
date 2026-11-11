@@ -232,3 +232,28 @@ def test_serve_with_two_workers_answers(tmp_path: Path, model: tw.Model, fresh: 
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@pytest.mark.parametrize("workers", ["1", "3"])
+@pytest.mark.parametrize(("flag", "value"), [("--namespace", "bad:ns"), ("--redis", "nonsense://x")])
+def test_serve_with_a_bad_setting_fails_once_with_a_message(
+    tmp_path: Path,
+    model: tw.Model,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    workers: str,
+    flag: str,
+    value: str,
+) -> None:
+    import os
+
+    import uvicorn
+
+    tw.save(model, tmp_path / "model")
+    monkeypatch.setattr(os, "environ", dict(os.environ))
+    calls: list[object] = []
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: calls.append(a))
+    argv = ["serve", "synthetic", "--model", str(tmp_path / "model"), "--redis", URL, "--workers", workers]
+    assert cli.main([*argv, flag, value]) == 2
+    assert calls == []  # no server, no workers
+    assert capsys.readouterr().err.startswith("signalrec: ")

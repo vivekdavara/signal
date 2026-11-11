@@ -369,12 +369,19 @@ def _serve(args: argparse.Namespace) -> int:
 
     model_dir = (args.model or DEFAULT_MODELS / args.dataset).resolve()
     common = {"host": args.host, "port": args.port, "log_level": "warning", "access_log": False}
-    if args.workers == 1:
+    # Build the app here once, whatever the number of workers: a bad model, namespace or Redis URL fails once, with a
+    # message. (Round 2 of the day-5 review: with --workers N only the model was checked here, and a bad namespace
+    # failed in every worker, which uvicorn's supervisor restarted every half second, for ever.)
+    try:
         app = _build_app(model_dir, args.redis, args.namespace, args.popular_ttl, args.experiment)
+    except tw.ModelError:
+        raise  # main reports it (exit 1), as for every command that reads a model
+    except ValueError as exc:  # a setting: the namespace, the Redis URL
+        print(f"signalrec: {exc}", file=sys.stderr)
+        return 2
+    if args.workers == 1:
         uvicorn.run(app, **common)
         return 0
-    # Fail here, once, rather than in every worker: the model loads and checks, and the settings parse back.
-    tw.load(model_dir)
     os.environ.update(
         {
             SERVE_ENV["model"]: str(model_dir),

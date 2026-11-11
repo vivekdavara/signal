@@ -15,6 +15,13 @@ Stages, each timed:
 6. **filter**: the business rules checked again on the final list, then the top k. Nothing should be left to remove:
    a movie that is would be a bug in the exclusion above, so it raises (a 500), rather than being dropped silently.
 
+**New users (day 5).** A user with no positives yet (a new MovieLens id, or one who has only rated movies below the
+positive threshold) gets the most popular eligible movies instead: the two-tower model was trained only on positives
+that had at least one earlier positive, so its vector for an empty history was never trained (``scripts/cold_start.py``
+measures both). Popularity is read whole (one HGETALL) and ties go to the smaller movie index, as the offline
+baseline's; the ranker is skipped, as its features include the retrieval score. ``user=None`` is a user the store has
+never seen: nothing to read, nothing rated. ``Recommendation.source`` says which path answered.
+
 The features read in stage 1 and the popularity in stage 4 are separate reads, so an event landing between them is
 seen by one and not the other; both are counts that move by one per event, so a request ranks with features at most
 one event apart.
@@ -29,6 +36,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import numpy.typing as npt
 
+from signalrec import features as fe
 from signalrec import ranking as rk
 from signalrec import retrieval as rt
 from signalrec.featurestore import FeatureStore
@@ -40,6 +48,7 @@ Float64Array = npt.NDArray[np.float64]
 N_CANDIDATES = 200
 STAGES = ("features", "user tower", "retrieve", "popularity", "rank", "filter")
 EXCLUDE = ("rated", "liked")
+SOURCES = ("two-tower", "popularity")
 
 
 @dataclass(frozen=True)
@@ -48,6 +57,7 @@ class Recommendation:
     scores: Float64Array  # the ranker's scores (the retrieval scores when the ranker was skipped)
     candidates: int  # how many retrieval returned
     seconds: dict[str, float] = field(default_factory=dict)  # per stage, in STAGES order
+    source: str = "two-tower"  # or "popularity": a user with no positives (SOURCES)
 
     @property
     def total(self) -> float:
@@ -88,6 +98,7 @@ class Recommender:
         self._has_genre = np.zeros((len(genre_of), model.n_items), dtype=bool)
         for g, movies in enumerate(self._genre_movies):
             self._has_genre[g, movies] = True
+        self._nobody = fe.user_features(np.empty(0, dtype=np.int64), model.catalogue)
 
     def genres(self, names: Sequence[str]) -> list[int]:
         """Genre names → indices; an unknown name is a ``KeyError`` naming it."""
@@ -100,13 +111,14 @@ class Recommender:
 
     def recommend(
         self,
-        user: int,
+        user: int | None,
         k: int = 10,
         exclude_genres: Sequence[str] = (),
         rank: bool = True,
         exclude: str = "rated",
     ) -> Recommendation:
-        """The top ``k`` movies for dense user index ``user``; fewer when fewer than ``k`` movies are eligible."""
+        """The top ``k`` movies for dense user index ``user`` (None: a user the store has never seen); fewer when fewer
+        than ``k`` movies are eligible."""
         if type(k) is not int or k < 1:
             raise ValueError(f"k must be an integer >= 1, got {k!r}")
         if exclude not in EXCLUDE:
@@ -116,18 +128,24 @@ class Recommender:
         seconds: dict[str, float] = {}
 
         t = clock()
-        features, rated = self.store.serving_view(user)
+        if user is None:
+            features, rated = self._nobody, np.empty(0, dtype=np.int64)
+        else:
+            features, rated = self.store.serving_view(user)
         seconds["features"] = clock() - t
+
+        removed = [features.seen] if exclude == "liked" else [rated, features.seen]
+        removed += [self._genre_movies[g] for g in genre_ids]
+        excluded = np.unique(np.concatenate(removed)).astype(np.int64)
+        n = max(self.n_candidates, k)
+        if len(features.recent) == 0:
+            return self._most_popular(k, n, excluded, genre_ids, seconds)
 
         t = clock()
         vector = self.model.tower.vector(features.recent)
         seconds["user tower"] = clock() - t
 
         t = clock()
-        removed = [features.seen] if exclude == "liked" else [rated, features.seen]
-        removed += [self._genre_movies[g] for g in genre_ids]
-        excluded = np.unique(np.concatenate(removed)).astype(np.int64)
-        n = max(self.n_candidates, k)
         candidates, retrieval_scores = self.retriever.search(vector, n, excluded)
         seconds["retrieve"] = clock() - t
 
@@ -147,13 +165,42 @@ class Recommender:
         seconds["rank"] = clock() - t
 
         t = clock()
+        self._check(movies, excluded, genre_ids)
+        movies, final_scores = movies[:k], final_scores[:k]
+        seconds["filter"] = clock() - t
+
+        return Recommendation(movies.astype(np.int64), final_scores.astype(np.float64), len(candidates), seconds)
+
+    def _most_popular(
+        self, k: int, n: int, excluded: IntArray, genre_ids: list[int], seconds: dict[str, float]
+    ) -> Recommendation:
+        """A user with no positives: the ``n`` most popular eligible movies (ties to the smaller index), top ``k``."""
+        clock = time.perf_counter
+        seconds["user tower"] = 0.0
+        t = clock()
+        popularity = self.store.popularity()
+        seconds["popularity"] = clock() - t
+
+        t = clock()
+        order = np.argsort(-popularity, kind="stable")
+        eligible = np.ones(self.model.n_items, dtype=bool)
+        eligible[excluded] = False
+        candidates = order[eligible[order]][:n].astype(np.int64)
+        seconds["retrieve"] = clock() - t
+        seconds["rank"] = 0.0
+
+        t = clock()
+        self._check(candidates, excluded, genre_ids)
+        movies = candidates[:k]
+        seconds["filter"] = clock() - t
+        timed = {stage: seconds[stage] for stage in STAGES}
+        scores = popularity[movies].astype(np.float64)
+        return Recommendation(movies, scores, len(candidates), timed, source="popularity")
+
+    def _check(self, movies: IntArray, excluded: IntArray, genre_ids: list[int]) -> None:
         bad = np.isin(movies, excluded)
         if genre_ids:
             in_genre = np.asarray(self._has_genre[genre_ids].any(axis=0), dtype=bool)
             bad |= in_genre[movies]
         if bad.any():  # retrieval excluded these already; reaching here is a bug, not a filter doing its job
             raise AssertionError(f"{int(bad.sum())} excluded movies reached the final list")
-        movies, final_scores = movies[:k], final_scores[:k]
-        seconds["filter"] = clock() - t
-
-        return Recommendation(movies.astype(np.int64), final_scores.astype(np.float64), len(candidates), seconds)

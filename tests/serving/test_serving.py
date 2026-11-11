@@ -109,10 +109,11 @@ def test_every_stage_is_timed(loaded: FeatureStore, model: Model) -> None:
 def test_an_event_changes_the_next_recommendation(fresh: FeatureStore, model: Model) -> None:
     rec = sv.Recommender(model, fresh, n_candidates=30)
     first = rec.recommend(1, k=10)
-    assert len(first.movies) == 10  # a user with no events still gets recommendations (the empty history's vector)
+    assert len(first.movies) == 10 and first.source == "popularity"  # no events yet: the most popular (day 5)
     top = int(first.movies[0])
     assert fresh.record(fe.Event(1, top, 100))
     after = rec.recommend(1, k=10)
+    assert after.source == "two-tower"
     assert top not in after.movies.tolist()
     assert after.movies.tolist() != first.movies.tolist()
     low = int(after.movies[0])
@@ -186,3 +187,67 @@ def test_load_store_is_idempotent(fresh: FeatureStore, prepared: Prepared, datas
     for u in range(prepared.n_users):
         assert fresh.user(u) == users[u]
     np.testing.assert_array_equal(fresh.popularity(), popularity)
+
+
+# --- users with no positives (day 5) -----------------------------------------------------------------------------
+
+
+def popular_order(popularity: fe.IntArray, excluded: set[int]) -> list[int]:
+    """Most popular first, ties to the smaller index, by brute force."""
+    movies = [m for m in range(len(popularity)) if m not in excluded]
+    return sorted(movies, key=lambda m: (-int(popularity[m]), m))
+
+
+def test_a_user_with_no_positives_gets_the_most_popular_movies(
+    loaded: FeatureStore, model: Model, prepared: Prepared
+) -> None:
+    rec = sv.Recommender(model, loaded)
+    popularity = loaded.popularity()
+    _, offline_popularity = fe.offline(prepared, include_val=True)
+    np.testing.assert_array_equal(popularity, offline_popularity)
+    new_user = prepared.n_users + 3  # nothing stored under it
+    got = rec.recommend(new_user, k=15)
+    assert got.source == "popularity"
+    assert got.movies.tolist() == popular_order(popularity, set())[:15]
+    np.testing.assert_array_equal(got.scores, popularity[got.movies].astype(np.float64))
+    assert got.candidates == min(sv.N_CANDIDATES, model.n_items)
+    assert tuple(got.seconds) == sv.STAGES and all(s >= 0 for s in got.seconds.values())
+    assert rec.recommend(None, k=15).movies.tolist() == got.movies.tolist()
+
+
+def test_the_popular_list_excludes_rated_movies_and_genres(fresh: FeatureStore, model: Model) -> None:
+    rec = sv.Recommender(model, fresh)
+    for user, movie in [(10, 3), (11, 3), (12, 3), (10, 7), (11, 7), (10, 1)]:
+        assert fresh.record(fe.Event(user, movie, 0))
+    assert fresh.record_rating(fe.Event(20, 7, 0))  # user 20 rated movie 7 below the threshold: no positives
+    genre = model.catalogue.genre_names[model.catalogue.movie_genres[3][0]]
+    in_genre = {
+        m for m, genres in enumerate(model.catalogue.movie_genres) if model.catalogue.movie_genres[3][0] in genres
+    }
+    got = rec.recommend(20, k=12, exclude_genres=[genre])
+    assert got.source == "popularity"
+    assert got.movies.tolist() == popular_order(fresh.popularity(), {7} | in_genre)[:12]
+    assert 7 not in got.movies.tolist() and not in_genre & set(got.movies.tolist())
+
+
+def test_the_first_positive_switches_to_the_two_tower_model(fresh: FeatureStore, model: Model) -> None:
+    rec = sv.Recommender(model, fresh)
+    assert rec.recommend(30).source == "popularity"
+    fresh.record(fe.Event(30, 5, 0))
+    got = rec.recommend(30)
+    assert got.source == "two-tower" and 5 not in got.movies.tolist()
+    np.testing.assert_array_equal(
+        got.movies, sv.Recommender(model, fresh).recommend(30).movies
+    )  # deterministic: the same store, the same answer
+
+
+def test_nobody_reads_nothing_from_the_store(
+    fresh: FeatureStore, model: Model, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = sv.Recommender(model, fresh)
+
+    def boom(user: int) -> None:
+        raise AssertionError("serving_view called for a user the store has never seen")
+
+    monkeypatch.setattr(fresh, "serving_view", boom)
+    assert rec.recommend(None, k=5).source == "popularity"

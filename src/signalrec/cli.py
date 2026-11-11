@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shlex
 import sys
 from collections.abc import Sequence
@@ -329,17 +330,63 @@ def _load_store(args: argparse.Namespace) -> int:
     return 0
 
 
-def _serve(args: argparse.Namespace) -> int:
-    import uvicorn
+# serve --workers N: uvicorn starts each worker process from an import string, not from an app object, so the
+# settings travel to them in these environment variables (set by _serve, read by app_from_env).
+SERVE_ENV = {
+    "model": "SIGNALREC_SERVE_MODEL",
+    "redis": "SIGNALREC_SERVE_REDIS",
+    "namespace": "SIGNALREC_SERVE_NAMESPACE",
+    "popular_ttl": "SIGNALREC_SERVE_POPULAR_TTL",
+    "experiment": "SIGNALREC_SERVE_EXPERIMENT",
+}
 
+
+def _build_app(model_dir: Path, redis_url: str, namespace: str, popular_ttl: float, experiment: Any) -> Any:
     from signalrec.api import create_app
     from signalrec.featurestore import FeatureStore
     from signalrec.serving import Recommender
 
-    model = tw.load(args.model or DEFAULT_MODELS / args.dataset)
-    store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
-    app = create_app(Recommender(model, store, popular_ttl=args.popular_ttl), args.experiment)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
+    model = tw.load(model_dir)
+    store = FeatureStore.connect(model.catalogue, redis_url, namespace)
+    return create_app(Recommender(model, store, popular_ttl=popular_ttl), experiment)
+
+
+def app_from_env() -> Any:
+    """The app factory each ``serve --workers N`` process runs (``signalrec.cli:app_from_env``): the model is loaded
+    and checked once per process, and every process connects to Redis on its own."""
+    env = {key: os.environ.get(name) for key, name in SERVE_ENV.items()}
+    missing = [SERVE_ENV[key] for key in ("model", "redis", "namespace", "popular_ttl") if env[key] is None]
+    if missing:
+        raise RuntimeError(f"app_from_env needs {', '.join(missing)} (signalrec serve --workers sets them)")
+    experiment = _experiment(env["experiment"]) if env["experiment"] else None
+    return _build_app(
+        Path(str(env["model"])), str(env["redis"]), str(env["namespace"]), _ttl(str(env["popular_ttl"])), experiment
+    )
+
+
+def _serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    model_dir = (args.model or DEFAULT_MODELS / args.dataset).resolve()
+    common = {"host": args.host, "port": args.port, "log_level": "warning", "access_log": False}
+    if args.workers == 1:
+        app = _build_app(model_dir, args.redis, args.namespace, args.popular_ttl, args.experiment)
+        uvicorn.run(app, **common)
+        return 0
+    # Fail here, once, rather than in every worker: the model loads and checks, and the settings parse back.
+    tw.load(model_dir)
+    os.environ.update(
+        {
+            SERVE_ENV["model"]: str(model_dir),
+            SERVE_ENV["redis"]: args.redis,
+            SERVE_ENV["namespace"]: args.namespace,
+            SERVE_ENV["popular_ttl"]: repr(args.popular_ttl),
+            SERVE_ENV["experiment"]: ""
+            if args.experiment is None
+            else f"{args.experiment.name}:{args.experiment.treatment_share!r}",
+        }
+    )
+    uvicorn.run("signalrec.cli:app_from_env", factory=True, workers=args.workers, **common)
     return 0
 
 
@@ -595,6 +642,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=_ttl,
         default=1.0,
         help="seconds the popular list (users with no positives yet) is kept between reads; 0: read every time",
+    )
+    p.add_argument(
+        "--workers",
+        type=_positive_int,
+        default=1,
+        help="server processes (default 1); each loads the model and connects to Redis on its own",
     )
     p.set_defaults(run=_serve)
     return parser

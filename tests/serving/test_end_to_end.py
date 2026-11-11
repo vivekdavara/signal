@@ -156,3 +156,79 @@ def test_serve_passes_the_popular_ttl(
     run("serve", "synthetic", "--model", str(tmp_path / "model"), "--redis", URL, *flag)
     (app,) = apps
     assert app.state.recommender.popular_ttl == ttl  # type: ignore[attr-defined]
+
+
+def test_serve_with_workers_hands_uvicorn_a_factory_and_the_settings(
+    tmp_path: Path, model: tw.Model, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    import uvicorn
+
+    tw.save(model, tmp_path / "model")
+    # serve sets os.environ for its workers: give it a copy, so nothing leaks into later tests.
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items() if k not in cli.SERVE_ENV.values()})
+    calls: list[tuple[object, dict[str, object]]] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: calls.append((app, kw)))
+    run(
+        *("serve", "synthetic", "--model", str(tmp_path / "model"), "--redis", URL, "--namespace", "ns-1"),
+        *("--workers", "3", "--popular-ttl", "0.25", "--experiment", "ranker-v1:0.3"),
+    )
+    ((target, kw),) = calls
+    assert target == "signalrec.cli:app_from_env" and kw["factory"] is True and kw["workers"] == 3
+    # What each worker would build from those settings.
+    app = cli.app_from_env()
+    rec = app.state.recommender
+    assert rec.popular_ttl == 0.25 and rec.store.namespace == "ns-1"
+    assert rec.model.npz_sha256 == tw.load(tmp_path / "model").npz_sha256
+    assert os.environ[cli.SERVE_ENV["experiment"]] == "ranker-v1:0.3"
+    assert cli.SERVE_ENV["model"] in os.environ and Path(os.environ[cli.SERVE_ENV["model"]]).is_absolute()
+
+
+def test_app_from_env_without_settings_says_what_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+
+    monkeypatch.setattr(os, "environ", {k: v for k, v in os.environ.items() if k not in cli.SERVE_ENV.values()})
+    with pytest.raises(RuntimeError, match="SIGNALREC_SERVE_MODEL"):
+        cli.app_from_env()
+
+
+def test_serve_with_two_workers_answers(tmp_path: Path, model: tw.Model, fresh: FeatureStore) -> None:
+    """The real thing: two uvicorn worker processes behind one port, each with its own model and Redis client."""
+    import socket
+    import subprocess
+    import time
+
+    import httpx
+
+    tw.save(model, tmp_path / "model")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    command = [sys.executable, "-m", "signalrec.cli", "serve", "synthetic", "--model", str(tmp_path / "model")]
+    command += ["--redis", URL, "--namespace", fresh.namespace, "--workers", "2", "--port", str(port)]
+    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            assert proc.poll() is None, proc.stderr.read().decode() if proc.stderr else ""
+            assert time.monotonic() < deadline, "no /health within 60 s"
+            try:
+                if httpx.get(f"http://127.0.0.1:{port}/health", timeout=1).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.2)
+        user = int(model.user_raw_ids.max()) + 5
+        movie = int(model.item_raw_ids[3])
+        r = httpx.post(f"http://127.0.0.1:{port}/events", json={"user": user, "movie": movie, "rating": 5}, timeout=5)
+        assert r.json() == {"applied": True, "positive": True, "new_user": True}
+        for _ in range(20):  # whichever worker answers, it reads the same store
+            body = httpx.get(f"http://127.0.0.1:{port}/recommendations/{user}", timeout=5).json()
+            assert body["source"] == "two-tower" and movie not in [i["movie"] for i in body["items"]]
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)

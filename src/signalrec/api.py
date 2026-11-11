@@ -3,7 +3,7 @@
 - ``GET /recommendations/{user}?k=10&exclude_genre=Horror``: the user's top k (MovieLens ids, titles, genres, the
   final score), through ``serving.Recommender``. The ``Server-Timing`` header carries each stage's milliseconds. With
   an experiment configured, the user's arm (``abtest.assign``) decides whether the ranker runs, and the response says
-  which arm it was.
+  which arm it was (none for a user served the popular list: both arms would show them the same).
 - ``POST /events``: ``{"user": 1, "movie": 1193, "rating": 5.0}``. A rating at or above the model's ``min_rating`` is
   a positive (the event script: features, popularity, the rated set); a lower one only joins the rated set. Both are
   idempotent: a retried request changes nothing the second time, and the response says whether it applied.
@@ -38,13 +38,16 @@ MAX_K = 100
 # numbers, so /recommendations/1_0 served user 10 (review of day 4), and leading zeros made "01" a second name for
 # user 1 (round 2). Up to 18 digits: always an int64.
 DIGITS = r"^(0|[1-9][0-9]{0,17})$"
+# The largest id DIGITS lets through; event bodies take ids in the same range, so a user an event registers can always
+# be asked for (review of day 5: POST took any id up to 2^63 - 1, and 2^63 was a 500 from the registry's own check).
+MAX_ID = 10**18 - 1
 
 
 class EventIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user: StrictInt = Field(ge=1)
-    movie: StrictInt = Field(ge=1)
+    user: StrictInt = Field(ge=1, le=MAX_ID)
+    movie: StrictInt = Field(ge=1, le=MAX_ID)
     rating: StrictFloat | StrictInt = Field(ge=0.5, le=5.0, allow_inf_nan=False)  # NaN, Infinity: 422 (review)
     time: StrictInt | None = Field(default=None, ge=0)  # Unix seconds; informational (the store keeps arrival order)
 
@@ -136,6 +139,10 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
             }
             for m, score in zip(rec.movies.tolist(), rec.scores.tolist(), strict=True)
         ]
+        # A user served the popular list sees the same list in either arm, so they aren't in the experiment: counting
+        # them would dilute the ranker's measured effect in both arms (review of day 5).
+        if rec.source != "two-tower":
+            arm = None
         return {"user": user, "k": k, "arm": arm, "source": rec.source, "items": items}
 
     @app.post("/events")

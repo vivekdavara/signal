@@ -239,3 +239,33 @@ def test_the_api_reports_the_package_version(api: TestClient) -> None:
     import signalrec
 
     assert api.get("/openapi.json").json()["info"]["version"] == signalrec.__version__ == "1.0.0"
+
+
+def test_users_on_the_popular_list_are_in_no_arm(recommender: sv.Recommender, model: Model) -> None:
+    experiment = abtest.Experiment("ranker-v1", 0.5)
+    api = TestClient(create_app(recommender, experiment))
+    first_new = int(model.user_raw_ids.max()) + 1
+    arms = {abtest.assign(experiment, u) for u in range(first_new, first_new + 20)}
+    assert arms == {abtest.CONTROL, abtest.TREATMENT}  # both arms would be drawn
+    for user in range(first_new, first_new + 20):
+        body = api.get(f"/recommendations/{user}").json()
+        assert body["source"] == "popularity" and body["arm"] is None
+
+
+@pytest.mark.parametrize("field", ["user", "movie"])
+@pytest.mark.parametrize("value", [10**18, 2**63, 2**64])
+def test_event_ids_beyond_what_a_get_accepts_are_a_422(
+    api: TestClient, model: Model, store: FeatureStore, field: str, value: int
+) -> None:
+    body = {"user": raw_user(model, 0), "movie": int(model.item_raw_ids[0]), "rating": 5, field: value}
+    r = api.post("/events", json=body)
+    assert r.status_code == 422, r.text
+    assert store.registered(min(value, 2**63 - 1), len(model.user_raw_ids)) is None
+
+
+def test_the_largest_id_an_event_takes_can_be_asked_for(api: TestClient, model: Model) -> None:
+    user = 10**18 - 1
+    r = api.post("/events", json={"user": user, "movie": int(model.item_raw_ids[0]), "rating": 5})
+    assert r.json()["new_user"] is True
+    got = api.get(f"/recommendations/{user}")
+    assert got.status_code == 200 and got.json()["source"] == "two-tower"

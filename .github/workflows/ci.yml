@@ -119,3 +119,11 @@ jobs:
             --out "$RUNNER_TEMP/serving-bench.json"
           python scripts/ab_simulate.py ml-latest-small --model "$RUNNER_TEMP/model" --experiments 50 \
             --out "$RUNNER_TEMP/abtest.json"
+      # Day 5 on real data, briefly: users held out of training (this run's two-tower configuration), and the new-user
+      # path's cost against this run's model and store. Their numbers aren't kept.
+      - name: New users smoke run
+        run: |
+          python scripts/cold_start.py ml-latest-small --source "$RUNNER_TEMP/twotower.json" \
+            --out "$RUNNER_TEMP/cold-start.json"
+          python scripts/bench_new_users.py ml-latest-small --model "$RUNNER_TEMP/model" --requests 100 --lead-in 10 \
+            --out "$RUNNER_TEMP/new-users-bench.json"

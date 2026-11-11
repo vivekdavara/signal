@@ -329,10 +329,13 @@ user the prepared data doesn't know was a 404, although the user tower works for
 
 - **A registry of new users** (`FeatureStore.register`, `registered`). The store is keyed by dense user index and the
   model's users are 0..n-1. A MovieLens id the model doesn't know gets the next index from n up, once, from a Lua
-  script: `<ns>:registry` (id → index), `<ns>:registry:count` (a counter: a deleted entry never frees its index for
-  someone else), `<ns>:registry:base` (n, written with the first registration; a store registered for another model is
-  refused). Like the event script, it checks every key's type and the counter before its first write. `registered`
-  only reads (one MULTI/EXEC), so a GET never registers anyone.
+  script: `<ns>:registry` (id → ordinal 1, 2, ... from `INCR`), `<ns>:registry:count` (a counter: a deleted entry never
+  frees its ordinal for someone else), `<ns>:registry:base` (n, written with the first registration; a store
+  registered for another model is refused). Python computes base + ordinal - 1 (after the review: Lua's doubles had
+  written indices from 10^14 up as "1e+14"). The three keys exist together and the counter covers the entries, or the
+  script refuses (after the review: a lost counter had re-issued a held index). Like the event script, it checks
+  everything before its first write. `registered` only reads (one MULTI/EXEC), so a GET never registers anyone; event
+  ids stop at 10^18 - 1, the largest a GET takes.
 - **Users with no positives get the most popular movies** (`serving.py`, `_most_popular`). The two-tower model trained
   only on positives with at least one earlier positive (`twotower.example_positions`), so its vector for an empty
   history is untrained. Until a user's first positive, a request reads the store's popularity whole (one HGETALL),
@@ -351,13 +354,18 @@ user the prepared data doesn't know was a 404, although the user tower works for
   replayed with their last h positives (h = 0, 1, 2, 3, all) and their test movie ranked by the served NumPy tower and
   by popularity, each excluding only those h movies. Retrieval order only: the ranker trained on every user's lists.
 - **Measured cost** (`scripts/bench_new_users.py`): known users, new users and nobody in-process, with the popular list
-  read every time and kept for a second.
+  read every time and kept for a second, paced at 1,000 requests/s so a kept list expires during the run.
+- **More than one process** (`signalrec serve --workers N`). uvicorn starts N worker processes from an import string
+  (`signalrec.cli:app_from_env`), so the settings travel in `SIGNALREC_SERVE_*` environment variables; each process
+  loads and checks the model and connects to Redis itself, and the parent loads the model once first so a bad model
+  fails once. Each process has its own popular-list cache. Users served the popular list are in no experiment arm
+  (both arms would show them the same list).
 - `v1.0.0`: README results summary and reading order, WALKTHROUGH day 5, `CHANGELOG.md`.
 
 ### What is still left
 
 - Late events: the store appends in arrival order (day 3).
-- More than one process: the GIL serialises one process's thread pool (day 4).
+- How far `--workers` scales on dedicated cores: measured only with the clients on the same laptop.
 - The registry has no bound and no authentication: anyone can register ids (README, "Limitations").
 
 ## Testing

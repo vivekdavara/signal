@@ -22,5 +22,7 @@ The first release: five days of work, each in the README's results and review se
   their first event (`FeatureStore.register`: atomic, idempotent, numbered from the model's users up); a user with no
   positives gets the most popular movies they haven't rated, and the two-tower model from their first positive;
   `scripts/cold_start.py` measures both on users held out of training; the popular list is kept for a second
-  (`--popular-ttl`), measured by `scripts/bench_new_users.py`. README results summary and reading order, WALKTHROUGH
-  day 5, this changelog.
+  (`--popular-ttl`), measured by `scripts/bench_new_users.py`; `signalrec serve --workers N` runs N server
+  processes (1,152 → 1,841 requests/s from 1 to 4 on the same laptop as the clients). The day's review fixed five
+  defects (registry ordinals, a damaged registry refused, event id bounds, untimed exclusions, an unpaced benchmark).
+  README results summary and reading order, WALKTHROUGH day 5, this changelog.

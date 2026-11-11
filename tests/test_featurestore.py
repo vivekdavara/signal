@@ -467,3 +467,24 @@ def test_clear_removes_the_registry(store: FeatureStore) -> None:
     store.register(1, 60)
     assert store.clear() == 3
     assert store.registered(1, 60) is None
+
+
+def test_a_registry_with_more_entries_than_its_count_is_refused(store: FeatureStore, client: redis.Redis) -> None:
+    store.register(1, 60)
+    client.hset(f"{store.namespace}:registry", 2, 1)  # a second entry the counter never issued
+    before = {k: client.dump(k) for k in client.scan_iter(match=f"{store.namespace}:*")}
+    with pytest.raises(FeatureStoreError, match="more than its count"):
+        store.register(3, 60)
+    assert {k: client.dump(k) for k in client.scan_iter(match=f"{store.namespace}:*")} == before
+
+
+def test_indices_far_past_the_model_are_exact(store: FeatureStore, client: redis.Redis) -> None:
+    """Day 5's review: the index was computed in Lua doubles and written with 14 significant digits."""
+    big = 2**62
+    assert store.register(1, big) == (big, True)
+    client.set(f"{store.namespace}:registry:count", "999999999999998")
+    assert store.register(2, big) == (big + 999_999_999_999_998, True)
+    assert store.registered(2, big) == big + 999_999_999_999_998
+    assert store.registered(1, big) == big
+    with pytest.raises(ValueError):
+        store.register(3, big + 1)

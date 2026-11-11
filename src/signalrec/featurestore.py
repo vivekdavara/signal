@@ -9,8 +9,8 @@ Keys, under a namespace (``signal`` by default; the tests use a fresh one each):
 - ``<ns>:u:<user>:rated``: a set of every movie they rated, liked or not (day 4: serving never recommends a movie the
   user has rated; ``seen`` holds positives only, because the processed data keeps only positives).
 - ``<ns>:popularity``: a hash, movie index → positives.
-- ``<ns>:registry`` (day 5): a hash, MovieLens id → dense index, for users the model doesn't know, numbered from the
-  model's number of users up by ``<ns>:registry:count``; ``<ns>:registry:base`` is that number (``register``).
+- ``<ns>:registry`` (day 5): a hash, MovieLens id → ordinal (1, 2, ...) for users the model doesn't know, by
+  ``<ns>:registry:count``; their dense index is ``<ns>:registry:base`` (the model's number of users) + ordinal - 1.
 
 An event is applied by one Lua script, so it is atomic (a reader sees all of an event's updates or none) and
 **idempotent**: the script adds the movie to ``seen`` first and changes nothing else if it was already there, so a
@@ -92,10 +92,15 @@ return 1
 
 # New users (day 5). The store is keyed by dense user index, and the model's users are 0..base-1, where base is the
 # model's number of users; a MovieLens id the model doesn't know gets the next index from base up, once, here.
-# KEYS: the registry hash (raw id → dense index), its counter, its base. ARGV: the raw id, the base.
-# The counter, not HLEN, numbers new users, so a deleted entry can't make two users share an index. The base is written
-# with the first registration and must match afterwards: a store loaded for one model can't hand out indices that
-# another model's prepared users already have.
+# KEYS: the registry hash (raw id → ordinal), its counter, its base. ARGV: the raw id, the base.
+# The hash holds each new user's ordinal n (1, 2, ...) from INCR, exact in Redis's int64, and Python adds the base:
+# the first version computed base + n - 1 in Lua, whose numbers are doubles that tostring writes with 14 significant
+# digits, so an index from 10^14 up was stored as "1e+14", after the writes (review of day 5). The counter, not HLEN,
+# numbers them, so a deleted entry can't make two users share an index. The base is written with the first
+# registration and must match afterwards: a store loaded for one model can't hand out indices that another model's
+# prepared users already have. The three keys exist together or not at all, and the counter is at least the number of
+# entries: a lost counter or base would re-issue an index someone holds (review of day 5), so either is an error.
+# Everything is checked before the first write.
 _REGISTER = """
 local expected = {'hash', 'string', 'string'}
 for i = 1, 3 do
@@ -108,22 +113,30 @@ local base = redis.call('GET', KEYS[3])
 if base and base ~= ARGV[2] then
   return redis.error_reply('BADBASE the registry numbers new users from ' .. base .. ', not ' .. ARGV[2])
 end
-local dense = redis.call('HGET', KEYS[1], ARGV[1])
-if dense then
-  return {dense, 0}
-end
 local count = redis.call('GET', KEYS[2])
 if count and not (string.match(count, '^%d+$') and string.len(count) <= 15) then
   return redis.error_reply('BADCOUNT ' .. KEYS[2] .. ' is not a count below 10^15')
+end
+local entries = redis.call('HLEN', KEYS[1])
+if (entries > 0 or count or base) and not (count and base) then
+  return redis.error_reply('BADREGISTRY ' .. KEYS[1] .. ': ' .. entries .. ' entries, its counter or base missing')
+end
+if count and tonumber(count) < entries then
+  return redis.error_reply('BADREGISTRY ' .. KEYS[1] .. ' has ' .. entries .. ' entries, more than its count ' .. count)
+end
+local ordinal = redis.call('HGET', KEYS[1], ARGV[1])
+if ordinal then
+  return {ordinal, 0}
 end
 if not base then
   redis.call('SET', KEYS[3], ARGV[2])
 end
 local n = redis.call('INCR', KEYS[2])
-dense = tostring(tonumber(ARGV[2]) + n - 1)
-redis.call('HSET', KEYS[1], ARGV[1], dense)
-return {dense, 1}
+redis.call('HSET', KEYS[1], ARGV[1], n)
+return {n, 1}
 """
+# Bases up to 2^62 and at most 10^15 new users keep every index inside int64.
+MAX_BASE = 2**62
 
 
 class FeatureStoreError(RuntimeError):
@@ -174,9 +187,9 @@ class FeatureStore:
 
     @staticmethod
     def _check_registry_args(raw: int, base: int) -> None:
-        for name, value in (("raw id", raw), ("base", base)):
-            if isinstance(value, bool) or not isinstance(value, int | np.integer) or not 0 <= value <= INT64_MAX:
-                raise ValueError(f"{name} must be an integer in [0, 2^63), got {value!r}")
+        for name, value, high in (("raw id", raw, INT64_MAX), ("base", base, MAX_BASE)):
+            if isinstance(value, bool) or not isinstance(value, int | np.integer) or not 0 <= value <= high:
+                raise ValueError(f"{name} must be an integer in [0, {high}], got {value!r}")
 
     def register(self, raw: int, base: int) -> tuple[int, bool]:
         """The dense index of new user ``raw`` (a MovieLens id the model doesn't know), allocating the next one from
@@ -184,37 +197,39 @@ class FeatureStore:
         concurrent first events of one user get one index."""
         self._check_registry_args(raw, base)
         try:
-            dense_raw, created = self._register(keys=self._registry_keys, args=[int(raw), int(base)])
+            ordinal_raw, created = self._register(keys=self._registry_keys, args=[int(raw), int(base)])
         except redis.ResponseError as exc:
             raise FeatureStoreError(f"registry: {exc}") from None
-        return self._registered(dense_raw, raw, base), bool(created)
+        return self._dense(ordinal_raw, None, raw, base), bool(created)
 
     def registered(self, raw: int, base: int) -> int | None:
         """The dense index of new user ``raw`` if one was allocated, else None. Reads only: a GET never registers."""
         self._check_registry_args(raw, base)
-        registry, _, base_key = self._registry_keys
+        registry, count_key, base_key = self._registry_keys
         pipe = self.client.pipeline(transaction=True)
         pipe.hget(registry, int(raw))
+        pipe.get(count_key)
         pipe.get(base_key)
         try:
-            dense_raw, stored_base = pipe.execute()
+            ordinal_raw, count_raw, stored_base = pipe.execute()
         except redis.ResponseError as exc:
             raise FeatureStoreError(f"registry: {exc}") from None
         if stored_base is not None and self._text(stored_base) != str(int(base)):
             raise FeatureStoreError(
                 f"registry: it numbers new users from {self._text(stored_base)}, not {base} (another model's store?)"
             )
-        if dense_raw is None:
+        if ordinal_raw is None:
             return None
-        if stored_base is None:
-            raise FeatureStoreError(f"registry: user {raw} is registered but the registry has no base")
-        return self._registered(dense_raw, raw, base)
+        if stored_base is None or count_raw is None:
+            raise FeatureStoreError(f"registry: user {raw} is registered but the registry has no base or counter")
+        return self._dense(ordinal_raw, self._int(count_raw, "the registry's count"), raw, base)
 
-    def _registered(self, dense_raw: Any, raw: int, base: int) -> int:
-        dense = self._int(dense_raw, f"new user {raw}'s index")
-        if dense < base:  # a model's own user's index: the registry would merge two users
-            raise FeatureStoreError(f"registry: new user {raw} has index {dense}, inside the model's {base} users")
-        return dense
+    def _dense(self, ordinal_raw: Any, count: int | None, raw: int, base: int) -> int:
+        """base + ordinal - 1, for an ordinal in [1, count] (the script checked the count when it returned one)."""
+        ordinal = self._int(ordinal_raw, f"new user {raw}'s ordinal")
+        if ordinal < 1 or (count is not None and ordinal > count):
+            raise FeatureStoreError(f"registry: new user {raw} has ordinal {ordinal}, outside 1..{count}")
+        return int(base) + ordinal - 1
 
     def _args(self, event: Event) -> tuple[list[str], list[int]]:
         # Integers only: a user of 3.0 or True would be written under u:3.0 or u:True, keys user(3) never reads

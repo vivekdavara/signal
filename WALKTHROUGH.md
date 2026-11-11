@@ -485,12 +485,13 @@ Reading the whole popularity hash (3,125 fields) is 2.1 of the new-user path's 2
 request. It is the same list for every new user and moves by one count per event, so keeping it for a second costs no
 visible quality: 139 µs at p50 (most of it the store read that finds the user has nothing). A user's own rated movies
 are excluded per request, so their own events show at once. Known users' features are never cached: they change with
-every event and the ranker's skew test depends on reading them fresh.
+every event the user sends, and a stale history would show them a movie they just rated.
 
 **What did day 5 change in the earlier days' tests?**
-Two day-4 tests asserted that an unknown user is a 404. That is now the popular list, so the assertion changed; the
-mutant one of them kills (an id between two known ids resolving to a neighbour) is still killed, because the neighbour
-would be served by the two-tower model and `source` says so.
+Three day-4 tests asserted that an unknown user is a 404 (two for a GET, one for an event). A GET is now the popular
+list and an event registers the user, so those assertions changed, and the event response gained `new_user`. The
+mutant one of them was written to kill (an id between two known ids resolving to a neighbour) is still killed: the
+neighbour would be served by the two-tower model, and `source` says so.
 
 **What's in v1.0.0?**
 The five days, the README's results summary with its caveats, this walkthrough, `CHANGELOG.md`, version 1.0.0 in the

@@ -372,3 +372,98 @@ def test_rated_events_stop_before_each_users_test_movie(tmp_path: Path) -> None:
     assert lower > 0  # the synthetic data has ratings below 4, so the set is more than the positives
     for u in range(p.n_users):
         assert int(p.test_items[u]) not in by_user.get(u, set())
+
+
+# --- the registry of new users (day 5) ---------------------------------------------------------------------------
+
+
+def test_new_users_are_numbered_from_the_base_once_each(store: FeatureStore) -> None:
+    assert store.registered(9001, 60) is None
+    assert store.register(9001, 60) == (60, True)
+    assert store.register(42, 60) == (61, True)
+    assert store.register(9001, 60) == (60, False)  # idempotent: a retried first event
+    assert store.registered(9001, 60) == 60
+    assert store.registered(42, 60) == 61
+    assert store.registered(7, 60) is None
+
+
+def test_looking_up_a_user_writes_nothing(store: FeatureStore, client: redis.Redis) -> None:
+    assert store.registered(5, 60) is None
+    assert list(client.scan_iter(match=f"{store.namespace}:*")) == []
+
+
+def test_a_registry_for_another_model_is_refused(store: FeatureStore) -> None:
+    store.register(1, 60)
+    with pytest.raises(FeatureStoreError, match="numbers new users from 60, not 61"):
+        store.register(2, 61)
+    with pytest.raises(FeatureStoreError, match="from 60, not 61"):
+        store.registered(1, 61)
+    assert store.registered(2, 60) is None  # the refused call allocated nothing
+
+
+def test_a_deleted_entry_never_frees_its_index(store: FeatureStore, client: redis.Redis) -> None:
+    store.register(1, 10)
+    store.register(2, 10)
+    client.hdel(f"{store.namespace}:registry", 1)
+    assert store.register(3, 10) == (12, True)  # not 11, which user 2 holds
+
+
+def test_concurrent_first_events_of_one_user_get_one_index(store: FeatureStore) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(16) as pool:
+        results = list(pool.map(lambda _: store.register(777, 60), range(64)))
+    assert {dense for dense, _ in results} == {60}
+    assert sum(created for _, created in results) == 1
+
+
+@pytest.mark.parametrize(
+    ("suffix", "setup", "message"),
+    [
+        ("registry", lambda c, k: c.set(k, "x"), "WRONGTYPE"),
+        ("registry:count", lambda c, k: c.hset(k, "a", 1), "WRONGTYPE"),
+        ("registry:base", lambda c, k: c.rpush(k, 1), "WRONGTYPE"),
+        ("registry:count", lambda c, k: c.set(k, "-3"), "BADCOUNT"),
+        ("registry:count", lambda c, k: c.set(k, "1.5"), "BADCOUNT"),
+    ],
+)
+def test_a_damaged_registry_is_an_error_and_nothing_is_written(
+    store: FeatureStore, client: redis.Redis, suffix: str, setup: object, message: str
+) -> None:
+    key = f"{store.namespace}:{suffix}"
+    setup(client, key)  # type: ignore[operator]
+    before = {k: client.dump(k) for k in client.scan_iter(match=f"{store.namespace}:*")}
+    with pytest.raises(FeatureStoreError, match=message):
+        store.register(1, 60)
+    after = {k: client.dump(k) for k in client.scan_iter(match=f"{store.namespace}:*")}
+    assert after == before
+
+
+@pytest.mark.parametrize("value", ["abc", "-1", "59", " 61"])
+def test_a_foreign_index_in_the_registry_is_an_error(store: FeatureStore, client: redis.Redis, value: str) -> None:
+    store.register(1, 60)
+    client.hset(f"{store.namespace}:registry", 2, value)
+    with pytest.raises(FeatureStoreError):
+        store.registered(2, 60)
+    with pytest.raises(FeatureStoreError):
+        store.register(2, 60)
+
+
+def test_an_entry_without_a_base_is_an_error(store: FeatureStore, client: redis.Redis) -> None:
+    client.hset(f"{store.namespace}:registry", 2, 70)
+    with pytest.raises(FeatureStoreError, match="no base"):
+        store.registered(2, 60)
+
+
+@pytest.mark.parametrize(("raw", "base"), [(-1, 60), (1, -1), (True, 60), (1.0, 60), (2**63, 60), (1, "60")])
+def test_bad_registry_arguments_are_refused_before_redis(store: FeatureStore, raw: object, base: object) -> None:
+    with pytest.raises(ValueError):
+        store.register(raw, base)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        store.registered(raw, base)  # type: ignore[arg-type]
+
+
+def test_clear_removes_the_registry(store: FeatureStore) -> None:
+    store.register(1, 60)
+    assert store.clear() == 3
+    assert store.registered(1, 60) is None

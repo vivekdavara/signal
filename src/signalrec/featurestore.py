@@ -9,6 +9,8 @@ Keys, under a namespace (``signal`` by default; the tests use a fresh one each):
 - ``<ns>:u:<user>:rated``: a set of every movie they rated, liked or not (day 4: serving never recommends a movie the
   user has rated; ``seen`` holds positives only, because the processed data keeps only positives).
 - ``<ns>:popularity``: a hash, movie index → positives.
+- ``<ns>:registry`` (day 5): a hash, MovieLens id → dense index, for users the model doesn't know, numbered from the
+  model's number of users up by ``<ns>:registry:count``; ``<ns>:registry:base`` is that number (``register``).
 
 An event is applied by one Lua script, so it is atomic (a reader sees all of an event's updates or none) and
 **idempotent**: the script adds the movie to ``seen`` first and changes nothing else if it was already there, so a
@@ -88,6 +90,42 @@ return 1
 """
 
 
+# New users (day 5). The store is keyed by dense user index, and the model's users are 0..base-1, where base is the
+# model's number of users; a MovieLens id the model doesn't know gets the next index from base up, once, here.
+# KEYS: the registry hash (raw id → dense index), its counter, its base. ARGV: the raw id, the base.
+# The counter, not HLEN, numbers new users, so a deleted entry can't make two users share an index. The base is written
+# with the first registration and must match afterwards: a store loaded for one model can't hand out indices that
+# another model's prepared users already have.
+_REGISTER = """
+local expected = {'hash', 'string', 'string'}
+for i = 1, 3 do
+  local t = redis.call('TYPE', KEYS[i])['ok']
+  if t ~= 'none' and t ~= expected[i] then
+    return redis.error_reply('WRONGTYPE ' .. KEYS[i] .. ' holds a ' .. t .. ', not a ' .. expected[i])
+  end
+end
+local base = redis.call('GET', KEYS[3])
+if base and base ~= ARGV[2] then
+  return redis.error_reply('BADBASE the registry numbers new users from ' .. base .. ', not ' .. ARGV[2])
+end
+local dense = redis.call('HGET', KEYS[1], ARGV[1])
+if dense then
+  return {dense, 0}
+end
+local count = redis.call('GET', KEYS[2])
+if count and not (string.match(count, '^%d+$') and string.len(count) <= 15) then
+  return redis.error_reply('BADCOUNT ' .. KEYS[2] .. ' is not a count below 10^15')
+end
+if not base then
+  redis.call('SET', KEYS[3], ARGV[2])
+end
+local n = redis.call('INCR', KEYS[2])
+dense = tostring(tonumber(ARGV[2]) + n - 1)
+redis.call('HSET', KEYS[1], ARGV[1], dense)
+return {dense, 1}
+"""
+
+
 class FeatureStoreError(RuntimeError):
     """Redis holds what the store didn't write (a wrong type, a non-integer count, a movie outside the catalogue)."""
 
@@ -112,6 +150,7 @@ class FeatureStore:
         self.namespace = namespace
         self.recent = recent
         self._record: Any = client.register_script(_RECORD)
+        self._register: Any = client.register_script(_REGISTER)
 
     @classmethod
     def connect(cls, catalogue: Catalogue, url: str = DEFAULT_URL, namespace: str = DEFAULT_NAMESPACE) -> FeatureStore:
@@ -127,6 +166,55 @@ class FeatureStore:
     @property
     def _popularity_key(self) -> str:
         return f"{self.namespace}:popularity"
+
+    @property
+    def _registry_keys(self) -> list[str]:
+        base = f"{self.namespace}:registry"
+        return [base, f"{base}:count", f"{base}:base"]
+
+    @staticmethod
+    def _check_registry_args(raw: int, base: int) -> None:
+        for name, value in (("raw id", raw), ("base", base)):
+            if isinstance(value, bool) or not isinstance(value, int | np.integer) or not 0 <= value <= INT64_MAX:
+                raise ValueError(f"{name} must be an integer in [0, 2^63), got {value!r}")
+
+    def register(self, raw: int, base: int) -> tuple[int, bool]:
+        """The dense index of new user ``raw`` (a MovieLens id the model doesn't know), allocating the next one from
+        ``base`` (the model's number of users) the first time; True if this call allocated it. Atomic and idempotent:
+        concurrent first events of one user get one index."""
+        self._check_registry_args(raw, base)
+        try:
+            dense_raw, created = self._register(keys=self._registry_keys, args=[int(raw), int(base)])
+        except redis.ResponseError as exc:
+            raise FeatureStoreError(f"registry: {exc}") from None
+        return self._registered(dense_raw, raw, base), bool(created)
+
+    def registered(self, raw: int, base: int) -> int | None:
+        """The dense index of new user ``raw`` if one was allocated, else None. Reads only: a GET never registers."""
+        self._check_registry_args(raw, base)
+        registry, _, base_key = self._registry_keys
+        pipe = self.client.pipeline(transaction=True)
+        pipe.hget(registry, int(raw))
+        pipe.get(base_key)
+        try:
+            dense_raw, stored_base = pipe.execute()
+        except redis.ResponseError as exc:
+            raise FeatureStoreError(f"registry: {exc}") from None
+        if stored_base is not None and self._text(stored_base) != str(int(base)):
+            raise FeatureStoreError(
+                f"registry: it numbers new users from {self._text(stored_base)}, not {base} (another model's store?)"
+            )
+        if dense_raw is None:
+            return None
+        if stored_base is None:
+            raise FeatureStoreError(f"registry: user {raw} is registered but the registry has no base")
+        return self._registered(dense_raw, raw, base)
+
+    def _registered(self, dense_raw: Any, raw: int, base: int) -> int:
+        dense = self._int(dense_raw, f"new user {raw}'s index")
+        if dense < base:  # a model's own user's index: the registry would merge two users
+            raise FeatureStoreError(f"registry: new user {raw} has index {dense}, inside the model's {base} users")
+        return dense
 
     def _args(self, event: Event) -> tuple[list[str], list[int]]:
         # Integers only: a user of 3.0 or True would be written under u:3.0 or u:True, keys user(3) never reads

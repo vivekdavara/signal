@@ -156,12 +156,16 @@ class Recommender:
             features, rated = self.store.serving_view(user)
         seconds["features"] = clock() - t
 
+        # Building the exclusions is part of retrieval (the search takes them) on either path; it is timed as such
+        # (review of day 5: it had fallen outside every stage, so Server-Timing under-reported).
+        t = clock()
         removed = [features.seen] if exclude == "liked" else [rated, features.seen]
         removed += [self._genre_movies[g] for g in genre_ids]
         excluded = np.unique(np.concatenate(removed)).astype(np.int64)
         n = max(self.n_candidates, k)
+        exclusions = clock() - t
         if len(features.recent) == 0:
-            return self._most_popular(k, n, excluded, genre_ids, seconds)
+            return self._most_popular(k, n, excluded, genre_ids, seconds, exclusions)
 
         t = clock()
         vector = self.model.tower.vector(features.recent)
@@ -169,7 +173,7 @@ class Recommender:
 
         t = clock()
         candidates, retrieval_scores = self.retriever.search(vector, n, excluded)
-        seconds["retrieve"] = clock() - t
+        seconds["retrieve"] = exclusions + (clock() - t)
 
         t = clock()
         popularity = np.zeros(self.model.n_items, dtype=np.int64)
@@ -194,7 +198,7 @@ class Recommender:
         return Recommendation(movies.astype(np.int64), final_scores.astype(np.float64), len(candidates), seconds)
 
     def _most_popular(
-        self, k: int, n: int, excluded: IntArray, genre_ids: list[int], seconds: dict[str, float]
+        self, k: int, n: int, excluded: IntArray, genre_ids: list[int], seconds: dict[str, float], exclusions: float
     ) -> Recommendation:
         """A user with no positives: the ``n`` most popular eligible movies (ties to the smaller index), top ``k``."""
         clock = time.perf_counter
@@ -208,7 +212,7 @@ class Recommender:
         eligible = np.ones(self.model.n_items, dtype=bool)
         eligible[excluded] = False
         candidates = popular.order[eligible[popular.order]][:n].astype(np.int64)
-        seconds["retrieve"] = clock() - t
+        seconds["retrieve"] = exclusions + (clock() - t)
         seconds["rank"] = 0.0
 
         t = clock()

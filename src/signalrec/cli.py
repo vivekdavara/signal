@@ -338,7 +338,7 @@ def _serve(args: argparse.Namespace) -> int:
 
     model = tw.load(args.model or DEFAULT_MODELS / args.dataset)
     store = FeatureStore.connect(model.catalogue, args.redis, args.namespace)
-    app = create_app(Recommender(model, store), args.experiment)
+    app = create_app(Recommender(model, store, popular_ttl=args.popular_ttl), args.experiment)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning", access_log=False)
     return 0
 
@@ -351,6 +351,16 @@ def _experiment(text: str) -> Any:
         return abtest.Experiment(name, float(share) if colon else 0.5)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"{text!r}: {exc}") from None
+
+
+def _ttl(text: str) -> float:
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if not 0 <= value < 3600:  # NaN fails both
+        raise argparse.ArgumentTypeError(f"{text!r}: expected seconds in [0, 3600)")
+    return value
 
 
 def _positive_int(text: str) -> int:
@@ -579,6 +589,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--experiment",
         type=_experiment,
         help="name[:treatment share], e.g. ranker-v1:0.5: the control arm skips the ranker",
+    )
+    p.add_argument(
+        "--popular-ttl",
+        type=_ttl,
+        default=1.0,
+        help="seconds the popular list (users with no positives yet) is kept between reads; 0: read every time",
     )
     p.set_defaults(run=_serve)
     return parser

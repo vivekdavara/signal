@@ -63,6 +63,7 @@ def create_app(recommender: Recommender, experiment: abtest.Experiment | None = 
     store = recommender.store
     min_rating = float(model.info.get("min_rating", 4.0))
     app = FastAPI(title="Signal", version="0.1.0")
+    app.state.recommender = recommender  # what it serves with, for the tests and for anyone embedding the app
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:

@@ -135,3 +135,24 @@ def test_load_store_refuses_a_model_from_other_parameters(tmp_path: Path) -> Non
     (model_dir / "model.json").write_text(json.dumps(meta))
     code = cli.main(["load-store", "synthetic", "--data-dir", data, "--model", str(model_dir), "--namespace", "unused"])
     assert code == 1
+
+
+@pytest.mark.parametrize("bad", ["-1", "3600", "nan", "inf", "soon", ""])
+def test_bad_popular_ttls_are_usage_errors(bad: str) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.build_parser().parse_args(["serve", "ml-1m", "--popular-ttl", bad])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(("flag", "ttl"), [([], 1.0), (["--popular-ttl", "0"], 0.0), (["--popular-ttl", "2.5"], 2.5)])
+def test_serve_passes_the_popular_ttl(
+    tmp_path: Path, model: tw.Model, monkeypatch: pytest.MonkeyPatch, flag: list[str], ttl: float
+) -> None:
+    import uvicorn
+
+    tw.save(model, tmp_path / "model")
+    apps: list[object] = []
+    monkeypatch.setattr(uvicorn, "run", lambda app, **_: apps.append(app))
+    run("serve", "synthetic", "--model", str(tmp_path / "model"), "--redis", URL, *flag)
+    (app,) = apps
+    assert app.state.recommender.popular_ttl == ttl  # type: ignore[attr-defined]

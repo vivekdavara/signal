@@ -208,3 +208,8 @@ def test_nothing_to_measure_is_a_usage_error() -> None:
     assert exc.value.code == 2
     with pytest.raises(SystemExit):
         bs.main(["ml-1m", "--workers", "0"])
+
+
+def test_an_empty_rate_list_is_a_closed_loop_only_run() -> None:
+    assert bs._rates("") == []
+    assert bs._rates("100,200") == [100.0, 200.0]

@@ -394,7 +394,8 @@ def bench_http(args: argparse.Namespace, raw_users: Sequence[int]) -> dict[str, 
 
 
 def _rates(text: str) -> list[float]:
-    return [float(x) for x in text.split(",")]
+    """Comma-separated rates; an empty string is none (a closed-loop-only run)."""
+    return [float(x) for x in text.split(",") if x.strip()]
 
 
 def _ints(text: str) -> list[int]:

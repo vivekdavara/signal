@@ -1,0 +1,101 @@
+{
+  "command": "python scripts/bench_serving.py ml-1m --no-stages --workers 2 --concurrency 16,32,64 --rates  --out results/ml-1m/serving-workers-2.json",
+  "dataset": "ml-1m",
+  "candidates": 200,
+  "index": "flat (exact)",
+  "stages, in-process": {},
+  "http": {
+    "client processes": 4,
+    "closed loop": [
+      {
+        "concurrency": 16,
+        "client processes": 4,
+        "requests": 16051,
+        "seconds": 10.00879770796746,
+        "throughput (req/s)": 1603.689121144158,
+        "latency (\u00b5s)": {
+          "p50": 12256.541987881064,
+          "p95": 18693.08401364833,
+          "p99": 20884.083001874387,
+          "max": 27313.583064824343,
+          "mean": 9972.45846910284
+        },
+        "server pipeline (\u00b5s)": {
+          "p50": 6503.999999999999,
+          "p95": 12260.000000000002,
+          "p99": 14289.000000000002,
+          "max": 20541.000000000004,
+          "mean": 5818.468568936515
+        }
+      },
+      {
+        "concurrency": 32,
+        "client processes": 4,
+        "requests": 15812,
+        "seconds": 10.01230574992951,
+        "throughput (req/s)": 1579.2566063128188,
+        "latency (\u00b5s)": {
+          "p50": 19386.750063858926,
+          "p95": 30233.833007514477,
+          "p99": 36073.79202730954,
+          "max": 78310.41608005762,
+          "mean": 20249.018574962174
+        },
+        "server pipeline (\u00b5s)": {
+          "p50": 11005.0,
+          "p95": 19013.999999999996,
+          "p99": 23392.000000000004,
+          "max": 61715.00000000001,
+          "mean": 11662.157285605868
+        }
+      },
+      {
+        "concurrency": 64,
+        "client processes": 4,
+        "requests": 15353,
+        "seconds": 10.0203085829271,
+        "throughput (req/s)": 1532.1883425984404,
+        "latency (\u00b5s)": {
+          "p50": 38958.959048613906,
+          "p95": 79163.41698728502,
+          "p99": 115940.87502453476,
+          "max": 281159.2919752002,
+          "mean": 41727.74408847501
+        },
+        "server pipeline (\u00b5s)": {
+          "p50": 15161.0,
+          "p95": 41180.99999999999,
+          "p99": 54063.99999999999,
+          "max": 118174.00000000001,
+          "mean": 19368.575718100696
+        }
+      }
+    ],
+    "open loop": [],
+    "client pids": 4
+  },
+  "wall seconds": 43.398107051849365,
+  "load average": {
+    "before": [
+      2.4208984375,
+      3.54150390625,
+      3.71923828125
+    ],
+    "after": [
+      4.4052734375,
+      3.888671875,
+      3.83544921875
+    ]
+  },
+  "slept seconds (estimate)": 6.246566772460938e-05,
+  "environment": {
+    "python": "3.11.12",
+    "machine": "arm64",
+    "system": "Darwin",
+    "cpus": 8,
+    "server": "2 uvicorn processes, sync endpoints on each one's thread pool; client and server on the same machine",
+    "server workers": 2,
+    "redis-py": "8.1.0",
+    "server's parser": "hiredis (redis-py's default when it is installed)"
+  }
+}

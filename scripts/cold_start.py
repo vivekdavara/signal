@@ -8,8 +8,10 @@ for an empty history was never trained. This measures both choices on users the 
 
 1. **Hold users out.** A fixed share of users (SHA-256 of "cold-start:<MovieLens id>", 20% by default) is removed
    from training entirely: the reported two-tower configuration (``twotower.json``) is retrained on the *other*
-   users' training + validation positives, and popularity counts only theirs. The held-out users' positives shape
-   nothing.
+   users' training + validation positives, and popularity counts only theirs. The held-out users' positives train no
+   weight and add to no count. They did take part in two earlier choices: the configuration in ``twotower.json``
+   (history length, temperature, epochs) was chosen on validation over all users, and the 5-core filter that fixed
+   the catalogue counted their positives. Both are small, and both favour the held-out users (review of day 5).
 2. **Replay a new user.** Each held-out user arrives with only their last ``h`` positives before the test movie
    (h = 0, 1, 2, 3, then all of them), as events would bring them. The two-tower list (the NumPy user tower serving
    uses, exact retrieval) and the popularity list each exclude those ``h`` movies, the only ones such a user's store

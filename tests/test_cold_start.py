@@ -122,7 +122,9 @@ def test_the_unpaired_interval() -> None:
     assert low < x.mean() - y.mean() < high and low > 0
 
 
-def test_the_held_out_users_shape_nothing(prepared: prepare.Prepared, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_held_out_users_train_no_weight_and_add_to_no_count(
+    prepared: prepare.Prepared, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Training sees exactly the other users' positives, and popularity counts only theirs."""
     seen: list[tt.Sequences] = []
     real_train = tt.train

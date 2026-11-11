@@ -31,7 +31,8 @@ history excluded), 95% bootstrap intervals over users. Each row's command and fi
 | A user the model never saw, after 1 positive (two-tower vs popularity) | NDCG@10 0.0816 vs 0.0123, +0.0692 [+0.0565, +0.0813] | day 5 |
 | ... with no positives (untrained empty history vs popularity) | 0.0080 vs 0.0123, -0.0043 [-0.0092, +0.0007] | day 5 |
 | Held out of training vs trained on (two-tower, every h) | no measurable difference (every interval reaches 0) | day 5 |
-| A new user's request, popular list kept 1 s vs read each time | p50 139 µs vs 2,288 µs | day 5 |
+| A new user's request, popular list kept 1 s vs read each time | p50 195 µs vs 2,306 µs (paced, 1,000/s) | day 5 |
+| HTTP throughput, 1 → 2 → 4 server processes (16 in flight) | 1,152 → 1,604 → 1,841 req/s (clients on the same laptop) | day 5 |
 
 Caveats that change how to read these: the per-user split leaks calendar time across users (measured on days 1 and
 2), and 31.4% of ml-1m users rated their test movie in the same second as their validation movie, where the split's
@@ -117,7 +118,8 @@ curl -s 'http://127.0.0.1:8116/recommendations/900001?k=5'   # "source": "two-to
 kill %1
 .venv/bin/signalrec load-store ml-1m --fresh   # undo the demo's events before any measurement
 .venv/bin/python scripts/cold_start.py ml-1m --out results/ml-1m/cold-start.json   # about 15 s
-.venv/bin/python scripts/bench_new_users.py ml-1m --out results/ml-1m/new-users-bench.json   # about 12 s
+.venv/bin/python scripts/bench_new_users.py ml-1m --out results/ml-1m/new-users-bench.json   # about 40 s
+.venv/bin/signalrec serve ml-1m --workers 4 &  # day 5: four server processes behind :8116 (kill %1 to stop)
 .venv/bin/python scripts/bench_serving.py ml-1m --rates 100,200,400,600,800,1000 --concurrency 1,4,16 \
   --out results/ml-1m/serving-bench.json  # about 3 minutes; on a quiet machine
 .venv/bin/python scripts/ab_simulate.py ml-1m   # results/ml-1m/abtest.json (the click model is SYNTHETIC)
@@ -582,7 +584,8 @@ GET  /recommendations/900001?k=5   source two-tower: Toy Story 2, Babe, Groundho
 
 1,231 of the 6,034 users (20%, by SHA-256 of their id) are held out of training entirely: the reported two-tower
 configuration is retrained on the other 4,803 users' training + validation positives, and popularity counts only
-theirs. Each held-out user is then replayed with their last h positives before the test movie, as events would bring
+theirs. (The held-out users did take part in two earlier choices: the configuration was chosen on validation over all
+users, and the 5-core filter that fixed the catalogue counted their positives. Both favour them slightly.) Each held-out user is then replayed with their last h positives before the test movie, as events would bring
 them, and their test movie is ranked by the served NumPy tower and by popularity, each excluding just those h movies.
 Test movies, post hoc, nothing chosen from them; retrieval order only (the ranker trained on every user's lists, so it
 is left out); 95% bootstrap intervals (paired within the held-out users, unpaired between the two groups). The
@@ -609,22 +612,50 @@ model reads the last 3 positives, so h = 3 and "all" give the same vector and di
 
 ### What the new-user path costs (`python scripts/bench_new_users.py ml-1m`, `results/ml-1m/new-users-bench.json`)
 
-`Recommender.recommend` in-process, 2,000 requests of each kind after 200 untimed, k = 10, hiredis; "new users" are
-indices with nothing stored (a store read that finds nothing), "nobody" an id with no events at all (no store read).
-Load average 2.5 before and 2.6 after (a video was playing), 0 s slept, about 12 s in all.
+`Recommender.recommend` in-process, k = 10, hiredis: 5,000 timed requests of each kind after 500 untimed, **paced at
+1,000 per second** (so a 1 s list expires about five times in a run, and the refreshes are in the tail); "new users"
+are indices with nothing stored (a store read that finds nothing), "nobody" an id with no events at all (no store
+read). Runs that can't keep up with the pace (2.3 ms a request) run back to back. Load average 3.0 before and 3.1
+after (Cloudflare WARP and Chrome were busy), 0 s slept, 41 s in all.
 
-| Kind | p50 µs | p95 µs | p99 µs | of which the popularity stage, p50 µs |
-|---|---|---|---|---|
-| known users (the day-4 path) | 760 | 1,114 | 1,504 | 277 (HMGET of 200) |
-| new users, popular list read every time (`popular_ttl` 0) | 2,288 | 2,330 | 2,387 | 2,089 (HGETALL + sort) |
-| new users, popular list kept 1 s | **139** | 146 | 153 | 0 |
-| nobody, read every time | 2,092 | 2,125 | 2,231 | 2,084 |
-| nobody, kept 1 s | **7** | 7 | 7 | 0 |
+| Kind | p50 µs | p95 µs | p99 µs | p99.9 µs | max µs | popularity reads (timed) |
+|---|---|---|---|---|---|---|
+| known users (the day-4 path) | 735 | 1,134 | 1,453 | 1,971 | 2,348 | 0 |
+| new users, popular list read every time (`popular_ttl` 0) | 2,306 | 2,470 | 2,547 | 2,742 | 3,068 | 5,000 |
+| new users, popular list kept 1 s | **195** | 225 | 246 | 344 | 2,536 | 5 |
+| nobody, read every time | 2,165 | 2,313 | 2,370 | 2,488 | 2,783 | 5,000 |
+| nobody, kept 1 s | **10** | 12 | 16 | 28 | 2,794 | 5 |
 
-Reading the whole popularity hash made a new user three times as slow as a known one; keeping the list for a second
-makes them five times faster than a known one. The price is staleness: for users we know nothing about, the popular
-list can be up to a second behind the events (`signalrec serve --popular-ttl 0` reads it every time). A user's own
-rated movies are excluded per request, from the cached order, so their own events show at once.
+Reading the whole popularity hash (about 2.1 ms) made a new user three times as slow as a known one; keeping the list
+for a second makes them about four times faster than a known one, with one request a second paying the 2.5 ms
+refresh (the max column). The price is staleness: for users we know nothing about, the popular list can be up to a
+second behind the events (`signalrec serve --popular-ttl 0` reads it every time). A user's own rated movies are
+excluded per request, from the cached order, so their own events show at once. The first version of this benchmark
+sent its requests back to back, 0.3 s in all, so its "kept 1 s" rows (139 µs and 7 µs at p50) measured a list that
+never expired (review of day 5); paced, the warm path itself is also slower (195 µs against 139 µs at p50), as an
+idle-between-requests process is.
+
+### More than one process (`python scripts/bench_serving.py ml-1m --no-stages --workers N --concurrency 16,32,64 --rates ""`, `results/ml-1m/serving-workers-{1,2,4}.json`)
+
+Day 4's one uvicorn process topped out near 1,150 requests/s, its thread pool taking turns on the GIL.
+`signalrec serve --workers N` starts N processes behind one port, each loading the model and connecting to Redis on
+its own. Closed loop over HTTP, the load from 4 client processes, 10 s per row after 2 s untimed, every request a
+known user:
+
+| Workers | 16 in flight | 32 in flight | 64 in flight |
+|---|---|---|---|
+| 1 | 1,152 req/s, p50 13.7 ms, p99 19.5 ms | 1,132 req/s, p99 46.8 ms | 1,120 req/s, p99 98.6 ms |
+| 2 | **1,604** req/s, p50 12.3 ms, p99 20.9 ms | 1,579 req/s, p99 36.1 ms | 1,532 req/s, p99 115.9 ms |
+| 4 | **1,841** req/s, p50 7.5 ms, p99 17.9 ms | 1,600 req/s, p99 45.9 ms | 1,211 req/s, p99 343.0 ms |
+
+Two processes give 1.4 times one's throughput; four give 1.6 times at 16 in flight and less as the load grows,
+because everything shares one 8-core laptop: 4 client processes, 4 server processes, Redis and the rest of the
+machine (load average 2.0 before the first run, 5.9 after the last; the runs went 1, 2, 4 workers in that order, so
+the later ones also had the busier machine). The one-worker row matches day 4's capacity (1,148 req/s). What this
+shows is that the GIL ceiling moves with processes; what four processes can do on a machine of their own is not
+measured. An open-loop run at 1,000-2,000 requests/s after these was stopped after 10 minutes: three client
+processes were at 100% CPU and the server idle (it answered `/health` in 1.5 ms); not diagnosed, and no number from it
+is used.
 
 ## Day 1 notes
 
@@ -813,6 +844,42 @@ model's `info` hashed differently after the JSON round trip, a NaN in `info` cra
 different body shape. Mutants: 14, 8 killed, 5 meaningful survivors killed by `test_survivors_d4r2.py`, one
 equivalent. After both rounds the serving check is still exact and the exported model's hash unchanged.
 
+## Review of day 5
+
+One review agent at `886242f` (today's code up to the new-user benchmark), in its own worktree, asked for
+correctness defects proved by failing tests and a mutation pass over the new code; its tests are in
+`tests/review_d5/`. **5 defects**, each reproduced here before the fix:
+
+- **Registry indices from 10^14 up were written as "1e+14"**, after the writes: the script computed base + n - 1 in
+  Lua, whose numbers are doubles that `tostring` prints with 14 significant digits (and inexact above 2^53). The hash
+  now holds each user's ordinal from `INCR` (exact int64) and Python adds the base, bounded to 2^62 (`1f94560`).
+- **A lost counter or base re-issued an index someone held**: a missing `registry:count` counted as 0, a missing
+  base as a first registration, so a third user got the first user's index. The entries, counter and base now exist
+  together or the script refuses before writing, and the counter must cover the entries (`1f94560`).
+- **`POST /events` took ids a GET can't ask for**: 10^18 registered a user no GET could serve, and 2^63 reached the
+  registry's own check as an unhandled 500. Event ids now stop at 10^18 - 1, the GET path's limit; a 422 beyond
+  (`c9b1257`).
+- **Building the exclusions was in no timed stage** after the popular path's branch moved it, so Server-Timing
+  under-reported (the reviewer measured 984 µs wall against 882 µs reported for a user with 2,000 rated movies). It
+  is part of "retrieve" again (`c076db6`). My own test for it passed with the fix removed, so it was dropped; the
+  reviewer's (np.unique slowed by 50 ms) is the one kept.
+- **My benchmark's "kept 1 s" rows never saw the list expire**: 2,200 requests back to back took 0.3 s. Requests are
+  paced now, and each run counts its refresh reads (`1193a03`); the table above is the paced re-run.
+
+Its untested suspicions, followed up: users served the popular list were reported in an experiment arm although both
+arms show them the same list (true: they are now in no arm, `c9b1257`); the cold-start write-up said the held-out
+users "shape nothing", but they were among those the configuration was chosen on and the 5-core filter counted
+them (true: the docs say so); the base identifies a model only by its number of users (true, and enough: the indices
+only depend on it, and a store for another dataset is reloaded with `--fresh`); an event that fails after
+registering leaves the user registered (true, and harmless: the retry gets the same index).
+
+Mutation pass: 60 mutants of the registry, the popular path and its cache, the API's registration and
+`cold_start.py`; the existing tests killed 40; of the 20 survivors 16 are killed by `test_survivors_d5.py` (among
+them a popular path cut at `n_candidates` when k is larger, `if not user` registering the model's user 0, popularity
+counting the held-out users, the paired and unpaired intervals swapped) and 4 are equivalent. One round only, for
+time; on every earlier day a second round found bugs in the first round's fixes, so these fixes are the least
+reviewed code in the repository.
+
 ## Design decisions
 
 - **Implicit feedback at rating ≥ 4.** The product wants movies a user will like, not merely watch. Low ratings are
@@ -903,9 +970,11 @@ equivalent. After both rounds the serving check is still exact and the exported 
   The popular list is up to `popular_ttl` (1 s) behind the events.
 - The cold-start measurement holds users out of the two-tower model but not of the ranker (trained on every user's
   lists), so it measures retrieval order, not the full served list, for new users.
-- One uvicorn process: its thread pool's requests take turns on the GIL, so throughput tops out near one core's worth
-  (about 1,100 requests/s here) and latency grows with concurrency; more cores need more processes. Client and server
-  shared one laptop in every measurement.
+- One uvicorn process's thread pool takes turns on the GIL, so it tops out near one core's worth (about 1,150
+  requests/s here). `--workers N` (day 5) runs N processes: 2 gave 1,604 and 4 gave 1,841 requests/s at 16 in flight,
+  with clients and server on the same 8-core laptop, so how far it scales on dedicated cores isn't measured. Each
+  process holds its own model and its own popular-list cache. Client and server shared one laptop in every
+  measurement. An open-loop run after the workers runs hung its clients (above); not diagnosed.
 - The features read and the popularity read are two round trips, so a request can rank with features one event
   apart; both are counts that move by one per event.
 - The A/B simulator's click model is synthetic: its lift and sample sizes are about that model. The users, their lists
@@ -953,11 +1022,11 @@ scripts/serving_check.py     every user through the request path against ranking
 scripts/bench_serving.py     per-stage latency in-process; HTTP closed loop and open loop at fixed rates
 scripts/ab_simulate.py       a simulated A/B test of the ranker: lift, power analysis, the statistics checked
 scripts/cold_start.py        users held out of training, replayed with 0-3 positives: two-tower vs popularity
-scripts/bench_new_users.py   the new-user path's latency, popular list read every time vs kept for a second
+scripts/bench_new_users.py   the new-user path's latency, paced, popular list read every time vs kept for a second
 results/<dataset>/{baselines,leakage,twotower,twotower-day2,leakage-twotower,ranking}.json,
 results/ml-1m/{recency-ablation,same-second,retrieval,featurestore}.json,
 results/ml-1m/{serving-check,serving-bench,abtest}.json,
-results/ml-1m/{cold-start,new-users-bench}.json
+results/ml-1m/{cold-start,new-users-bench}.json, results/ml-1m/serving-workers-{1,2,4}.json
 ```
 
 ## License

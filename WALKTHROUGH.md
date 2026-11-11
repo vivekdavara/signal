@@ -471,7 +471,9 @@ By holding 20% of users out of training entirely (a hash of their id, so it's fi
 configuration on the rest, and replaying each held-out user with only their last h positives, as their events would
 arrive. A test spies on training to check it saw exactly the other users' positives. Held-out and trained-on users
 score the same at every h (every interval reaches zero), which is what a tower without a user-id embedding should do.
-The ranker is left out of that measurement because it trained on every user's lists.
+The ranker is left out of that measurement because it trained on every user's lists. Not perfectly clean: the
+held-out users were among those the configuration was chosen on, and the 5-core filter counted their positives (the
+reviewer's point), both slightly in their favour.
 
 **What can go wrong with the registry?**
 Two raw ids sharing an index (it numbers from a counter, never the hash's size, so a deleted entry doesn't free one),
@@ -483,7 +485,9 @@ What it doesn't handle: anyone can register ids; a real service would register u
 **Why cache the popular list, and why for only a second?**
 Reading the whole popularity hash (3,125 fields) is 2.1 of the new-user path's 2.3 ms, three times a known user's
 request. It is the same list for every new user and moves by one count per event, so keeping it for a second costs no
-visible quality: 139 µs at p50 (most of it the store read that finds the user has nothing). A user's own rated movies
+visible quality: 195 µs at p50 at 1,000 requests/s (most of it the store read that finds the user has nothing), with
+one request a second paying the 2.5 ms refresh. (The first measurement said 139 µs: its requests ran back to back for
+0.3 s, so the list never expired; the review caught it, and the benchmark now paces its requests.) A user's own rated movies
 are excluded per request, so their own events show at once. Known users' features are never cached: they change with
 every event the user sends, and a stale history would show them a movie they just rated.
 
@@ -496,4 +500,22 @@ neighbour would be served by the two-tower model, and `source` says so.
 **What's in v1.0.0?**
 The five days, the README's results summary with its caveats, this walkthrough, `CHANGELOG.md`, version 1.0.0 in the
 package and the API, and CI green on the tagged commit.
+
+**Does `--workers` fix the GIL limit?**
+It moves it. Each worker is a separate process with its own interpreter, model copy and Redis connections, started
+by uvicorn from an import string (`signalrec.cli:app_from_env`, settings in `SIGNALREC_SERVE_*` variables). Closed
+loop, 16 in flight: 1,152 requests/s with one, 1,604 with two, 1,841 with four. Not linear, because the four client
+processes, the server processes and Redis all share the laptop's 8 cores, and at 64 in flight four workers fell to
+1,211 with a 343 ms p99. On dedicated cores it would scale further; that isn't measured. Each process keeps its own
+popular-list cache, so new users can see lists up to a second apart between processes.
+
+**What did the day-5 review find?**
+Five defects in a day's new code, all fixed with the reviewer's tests: the registry wrote indices from 10^14 up as
+"1e+14" (Lua numbers are doubles printed with 14 digits; it now stores ordinals from INCR and adds the base in
+Python), and a lost counter or base re-issued an index someone held (now refused before any write); `POST /events`
+took ids a GET could never ask for, and 2^63 was a 500; building the exclusions fell outside every timed stage; and
+my benchmark's "kept 1 s" rows had never seen the list expire. Its suspicions led to two more changes: popular-list
+users are reported in no experiment arm, and the cold-start write-up now says the held-out users still influenced
+the configuration choice and the catalogue filter. A mutation pass (60 mutants) left 20 survivors; 16 are now killed,
+4 are equivalent.
 

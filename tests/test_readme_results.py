@@ -127,13 +127,28 @@ def test_the_new_user_latency_table() -> None:
         "nobody, popular list kept 1 s": "nobody, kept 1 s",
     }
     for name, label in labels.items():
-        total, popularity = runs[name]["total (µs)"], runs[name]["stages (µs)"]["popularity"]
+        run = runs[name]
+        total = run["total (µs)"]
         cells = [c.strip().strip("*") for c in row(label).strip("|").split("|")]
-        assert cells[1:4] == [f"{total[p]:,.0f}" for p in ("p50", "p95", "p99")]
-        assert cells[4].split(" ")[0] == f"{popularity['p50']:,.0f}"
+        assert cells[1:6] == [f"{total[p]:,.0f}" for p in ("p50", "p95", "p99", "p99.9", "max")]
+        assert cells[6] == f"{run['popularity reads while timed']:,}"
+        assert run["rate (req/s)"] == 1000 and run["requests"] == 5000
     kept, read = (
         runs["new users, popular list kept 1 s"],
         runs["new users, popular list read every time (popular_ttl 0)"],
     )
     line = row("A new user's request, popular list kept 1 s vs read each time")
     assert f"p50 {kept['total (µs)']['p50']:,.0f} µs vs {read['total (µs)']['p50']:,.0f} µs" in line
+
+
+def test_the_workers_table() -> None:
+    rows = {w: load(f"serving-workers-{w}.json")["http"]["closed loop"] for w in (1, 2, 4)}
+    for w, runs in rows.items():
+        assert load(f"serving-workers-{w}.json")["environment"]["server workers"] == w
+        cells = [c.strip() for c in row(str(w), section("### More than one process")).strip("|").split("|")]
+        for cell, run in zip(cells[1:], runs, strict=True):
+            assert cell.replace("**", "").startswith(f"{run['throughput (req/s)']:,.0f} req/s")
+            assert f"p99 {run['latency (µs)']['p99'] / 1000:.1f} ms" in cell
+    line = row("HTTP throughput, 1 → 2 → 4 server processes (16 in flight)")
+    want = " → ".join(f"{rows[w][0]['throughput (req/s)']:,.0f}" for w in (1, 2, 4))
+    assert want in line

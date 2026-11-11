@@ -4,12 +4,51 @@ A movie recommender with online serving, built in five days on MovieLens: baseli
 two-tower retriever trained with in-batch negatives, FAISS retrieval, a ranking stage, a Redis feature store for
 online features, and a FastAPI service (retrieve → rank → filter) with a latency benchmark and an A/B test simulator.
 
-**Status: day 4 of 5** (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the two-tower retriever,
-chosen and reported by the same protocol, and what the split's time leak is worth to it; day 3: the history length
-chosen on validation, FAISS retrieval, a ranking stage, and a Redis feature store whose features equal the offline
-ones; day 4: the serving API, which reproduces the offline test metrics exactly, a latency benchmark, and an A/B test
-simulator). [DESIGN.md](DESIGN.md) is
-the specification for all five days. CI runs on every push (see "Day 1 notes").
+**Status: v1.0.0**, all five days done (day 1: design, data pipeline, evaluation protocol, baselines; day 2: the
+two-tower retriever and what the split's time leak is worth to it; day 3: the history length chosen on validation,
+FAISS retrieval, a ranking stage, and a Redis feature store whose features equal the offline ones; day 4: the serving
+API, which reproduces the offline test metrics exactly, a latency benchmark, and an A/B test simulator; day 5: new
+users, registered by their first event and served the popular list until their first positive, measured on users held
+out of training). [DESIGN.md](DESIGN.md) is the specification, [WALKTHROUGH.md](WALKTHROUGH.md) the questions an
+interviewer is likely to ask, [CHANGELOG.md](CHANGELOG.md) the days. CI runs on every push (see "Day 1 notes").
+
+## Results at v1.0.0
+
+ml-1m (6,034 users, 3,125 movies after the pipeline), test split, full ranking (every movie ranked, the user's
+history excluded), 95% bootstrap intervals over users. Each row's command and file are in the day's section below.
+
+| What | Result | Where |
+|---|---|---|
+| Popularity, NDCG@10 | 0.0193 [0.0166, 0.0221] | day 1 |
+| Item-kNN (chosen on validation), NDCG@10 | 0.0314 [0.0280, 0.0349] | day 1 |
+| Two-tower retriever (history 3, chosen on validation), NDCG@10 | **0.1220** [0.1155, 0.1286]; Recall@10 0.2176 | day 3 |
+| ... of which users not tied in the test's second (4,137 of 6,034) | 0.0841 (item-kNN 0.0271): +0.0570 [+0.0492, +0.0643] | day 3 |
+| Two-tower top 200 → listwise ranker, NDCG@10 | **0.1298**, +0.0078 [+0.0050, +0.0105] over the retrieved order | day 3 |
+| Served request path vs offline test metrics | equal to 1e-12 for every user (re-ranked and retrieved order) | day 4 |
+| Latency in-process (every user, hiredis) | p50 749 µs, p99 1,329 µs | day 4 |
+| HTTP, one uvicorn process | 1,148 req/s closed loop (c = 16); open loop 1,000 req/s at p99 4.2 ms | day 4 |
+| A/B simulation of the ranker (SYNTHETIC click model) | +3.2% conversion; 63,199 users per arm for 80% power | day 4 |
+| A user the model never saw, after 1 positive (two-tower vs popularity) | NDCG@10 0.0816 vs 0.0123, +0.0692 [+0.0565, +0.0813] | day 5 |
+| ... with no positives (untrained empty history vs popularity) | 0.0080 vs 0.0123, -0.0043 [-0.0092, +0.0007] | day 5 |
+| Held out of training vs trained on (two-tower, every h) | no measurable difference (every interval reaches 0) | day 5 |
+| A new user's request, popular list kept 1 s vs read each time | p50 139 µs vs 2,288 µs | day 5 |
+
+Caveats that change how to read these: the per-user split leaks calendar time across users (measured on days 1 and
+2), and 31.4% of ml-1m users rated their test movie in the same second as their validation movie, where the split's
+order is by movie id; about two thirds of the history-3 model's gain over day 2's is in that third (the untied row
+above is the conservative number). The ranker's gain is barely established on validation. All on one Apple M3 laptop,
+client and server together.
+
+## Reading order
+
+1. This README's "Results" sections, then DESIGN.md "Evaluation protocol" and each "As built" section.
+2. The request path: `src/signalrec/api.py` → `serving.py` (`Recommender.recommend`) → `featurestore.py`
+   (`serving_view`, the Lua scripts) → `tower.py` (`UserTower.vector`) → `retrieval.py` → `ranking.py`.
+3. The offline side: `prepare.py` (the split), `evaluate.py` (exact ranks), `twotower.py`, `experiment_twotower.py`
+   (the protocol), `experiment_ranking.py`.
+4. The checks that tie them together: `scripts/serving_check.py`, `tests/test_featurestore.py` (the skew tests),
+   `tests/test_tower.py`, `scripts/cold_start.py`.
+5. WALKTHROUGH.md.
 
 ## Architecture
 
@@ -26,14 +65,16 @@ flowchart LR
     BL --> EV[evaluation<br/>full ranking,<br/>bootstrap CIs]
     TT --> EV
   end
-  subgraph online["Online (days 3-4)"]
-    EV2[POST /events] --> FS
+  subgraph online["Online (days 3-5)"]
+    EV2[POST /events] -->|new id: register| FS
     C([client]) --> API[FastAPI :8116]
-    API --> FS[(Redis :6383<br/>feature store)]
+    API --> FS[(Redis :6383<br/>feature store,<br/>registry)]
     API --> UT[user tower<br/>numpy]
     UT --> IDX
     IDX --> RANK[rank]
     RANK --> FIL[filter]
+    API -->|no positives yet| POP[popular list<br/>kept 1 s]
+    POP --> FIL
     FIL --> C
   end
 ```
@@ -41,7 +82,8 @@ flowchart LR
 Built: the whole offline side and the whole online side. A request reads the user's features and rated set from Redis
 (one MULTI/EXEC), runs the user tower in NumPy, retrieves 200 eligible movies from the exact FAISS index (rated movies
 and excluded genres excluded inside the search), reads their popularity (one HMGET), ranks them, checks the filter and
-returns the top k.
+returns the top k. A user with no positives yet (day 5: a new id, registered by its first event) gets the most popular
+movies they haven't rated instead, from a popularity list kept for a second.
 
 ## How to run
 
@@ -68,7 +110,14 @@ redis-server --port 6383 --daemonize yes --save "" --appendonly no   # the featu
 curl -s 'http://127.0.0.1:8116/recommendations/1?k=5'
 curl -s -X POST http://127.0.0.1:8116/events -H 'content-type: application/json' \
   -d '{"user": 1, "movie": 364, "rating": 5}'
+curl -s 'http://127.0.0.1:8116/recommendations/900001?k=5'   # day 5: an id nobody knows: "source": "popularity"
+curl -s -X POST http://127.0.0.1:8116/events -H 'content-type: application/json' \
+  -d '{"user": 900001, "movie": 1, "rating": 5}'               # registers 900001 ("new_user": true)
+curl -s 'http://127.0.0.1:8116/recommendations/900001?k=5'   # "source": "two-tower", from that one positive
 kill %1
+.venv/bin/signalrec load-store ml-1m --fresh   # undo the demo's events before any measurement
+.venv/bin/python scripts/cold_start.py ml-1m --out results/ml-1m/cold-start.json   # about 15 s
+.venv/bin/python scripts/bench_new_users.py ml-1m --out results/ml-1m/new-users-bench.json   # about 12 s
 .venv/bin/python scripts/bench_serving.py ml-1m --rates 100,200,400,600,800,1000 --concurrency 1,4,16 \
   --out results/ml-1m/serving-bench.json  # about 3 minutes; on a quiet machine
 .venv/bin/python scripts/ab_simulate.py ml-1m   # results/ml-1m/abtest.json (the click model is SYNTHETIC)
@@ -509,6 +558,74 @@ lift 78.8% [76.3, 81.3], 79.0% and 81.4% of the time (target 80%); their interva
 ranker's offline gain is real but small, and confirming it online would take 126,000 to 447,000 users in all, 21 to 74 times ml-1m's
 6,034; how many depends mostly on the synthetic model, which is the point of showing three.
 
+## Results (day 5): new users
+
+Until day 4 a MovieLens id the prepared data doesn't know was a 404. Now its first `POST /events` registers it (the
+next dense index after the model's 6,034 users, by a Lua script: atomic, idempotent), and from then on it is served
+like anyone else. Until a user's first positive, they get the most popular movies they haven't rated: the two-tower
+model trained only on positives with at least one earlier positive, so its vector for an empty history was never
+trained. The response's `source` says which path answered. A GET never registers anyone.
+
+What it looks like (`signalrec serve ml-1m` on a freshly loaded store, the commands in "How to run"; output trimmed to
+the titles):
+
+```
+GET  /recommendations/900001?k=5   source popularity: American Beauty, Star Wars IV, Star Wars V, Raiders of the
+                                    Lost Ark, Saving Private Ryan
+POST /events {"user": 900001, "movie": 1, "rating": 5}   {"applied":true,"positive":true,"new_user":true}
+POST (the same again)                                     {"applied":false,"positive":true,"new_user":false}
+GET  /recommendations/900001?k=5   source two-tower: Toy Story 2, Babe, Groundhog Day, A Bug's Life, Shakespeare
+                                    in Love
+```
+
+### Users the model never saw (`python scripts/cold_start.py ml-1m`, `results/ml-1m/cold-start.json`)
+
+1,231 of the 6,034 users (20%, by SHA-256 of their id) are held out of training entirely: the reported two-tower
+configuration is retrained on the other 4,803 users' training + validation positives, and popularity counts only
+theirs. Each held-out user is then replayed with their last h positives before the test movie, as events would bring
+them, and their test movie is ranked by the served NumPy tower and by popularity, each excluding just those h movies.
+Test movies, post hoc, nothing chosen from them; retrieval order only (the ranker trained on every user's lists, so it
+is left out); 95% bootstrap intervals (paired within the held-out users, unpaired between the two groups). The
+model reads the last 3 positives, so h = 3 and "all" give the same vector and differ only in what is excluded.
+
+| h (positives known) | two-tower NDCG@10 | popularity | two-tower − popularity | two-tower Recall@10 | popularity | trained-on users' two-tower NDCG@10 | held out − trained on |
+|---|---|---|---|---|---|---|---|
+| 0 | 0.0080 | 0.0123 | -0.0043 [-0.0092, +0.0007] | 0.0179 | 0.0276 | 0.0069 | +0.0012 [-0.0025, +0.0050] |
+| 1 | 0.0816 | 0.0123 | **+0.0692** [+0.0565, +0.0813] | 0.1413 | 0.0276 | 0.0707 | +0.0109 [-0.0023, +0.0235] |
+| 2 | 0.1096 | 0.0125 | +0.0971 [+0.0827, +0.1119] | 0.1909 | 0.0276 | 0.0981 | +0.0115 [-0.0035, +0.0266] |
+| 3 | 0.1108 | 0.0125 | +0.0983 [+0.0846, +0.1130] | 0.1974 | 0.0276 | 0.1029 | +0.0080 [-0.0063, +0.0224] |
+| all | 0.1256 | 0.0217 | +0.1039 [+0.0884, +0.1190] | 0.2210 | 0.0414 | 0.1187 | +0.0069 [-0.0087, +0.0224] |
+
+- **With no positives, the untrained vector is no better than popularity** (-0.0043, and the interval reaches zero):
+  the fallback doesn't lose anything, but it isn't shown to win either. It was chosen for the reason above, not
+  from this number, and the number doesn't contradict it.
+- **One positive does most of the work**: 0.0123 → 0.0816, about 60% of the way to the full history's 0.1256.
+- **Training on a user doesn't measurably help them**: the held-out users score at least as well as the trained-on
+  ones at every h (every interval reaches zero; the point estimates even favour the held-out users). That is what a
+  tower with no user-id embedding should do, and it is what makes serving new users with the same model reasonable.
+- The model trained on 80% of users is a little weaker overall (trained-on users, all history: 0.1187, against the
+  full model's 0.1220 on everyone), as expected from less data.
+- The run is deterministic on this machine: a second run gave an identical JSON file (but for its command line).
+
+### What the new-user path costs (`python scripts/bench_new_users.py ml-1m`, `results/ml-1m/new-users-bench.json`)
+
+`Recommender.recommend` in-process, 2,000 requests of each kind after 200 untimed, k = 10, hiredis; "new users" are
+indices with nothing stored (a store read that finds nothing), "nobody" an id with no events at all (no store read).
+Load average 2.5 before and 2.6 after (a video was playing), 0 s slept, about 12 s in all.
+
+| Kind | p50 µs | p95 µs | p99 µs | of which the popularity stage, p50 µs |
+|---|---|---|---|---|
+| known users (the day-4 path) | 760 | 1,114 | 1,504 | 277 (HMGET of 200) |
+| new users, popular list read every time (`popular_ttl` 0) | 2,288 | 2,330 | 2,387 | 2,089 (HGETALL + sort) |
+| new users, popular list kept 1 s | **139** | 146 | 153 | 0 |
+| nobody, read every time | 2,092 | 2,125 | 2,231 | 2,084 |
+| nobody, kept 1 s | **7** | 7 | 7 | 0 |
+
+Reading the whole popularity hash made a new user three times as slow as a known one; keeping the list for a second
+makes them five times faster than a known one. The price is staleness: for users we know nothing about, the popular
+list can be up to a second behind the events (`signalrec serve --popular-ttl 0` reads it every time). A user's own
+rated movies are excluded per request, from the cached order, so their own events show at once.
+
 ## Day 1 notes
 
 Facts about the real files that the strict parsers found (DESIGN.md said nothing about them before):
@@ -739,6 +856,15 @@ equivalent. After both rounds the serving check is still exact and the exported 
   exclusion bug can't hide.
 - **Stateless hash assignment** (day 4). Every server computes the same arm from (experiment, user); no table to keep
   in sync, and a renamed experiment reshuffles independently.
+- **New users get an index on their first event, not on their first request** (day 5). A GET that registered ids
+  would let anyone fill the registry by asking; an event is the first thing the store has to remember about a user.
+  The index comes from a counter, not the registry's size, so a deleted entry can't hand someone else's index out
+  again, and the registry records which model's user count it started from.
+- **Popularity until the first positive, then the same model as everyone** (day 5). The model has no user-id
+  embedding, so a new user needs no retraining: one positive gives the tower a history it was trained on. The empty
+  history is the one input it never saw in training, so that one case falls back to popularity.
+- **A one-second cache for the popular list only** (day 5). It is the same list for every new user and changes by one
+  count per event, so a second's staleness costs nothing a user would see; a known user's features are never cached.
 - **A simulator that checks its own statistics** (day 4). The click model is synthetic, so the lift it reports is too;
   but the A/A rate, power and coverage are checked where the truth is known, which is what makes its sample-size
   answer worth reading.
@@ -769,8 +895,14 @@ equivalent. After both rounds the serving check is still exact and the exported 
 - The ranker's gain on ml-1m (+0.0078 NDCG@10 on test) is barely established on validation: its selection-users
   interval is [+0.0007, +0.0143], and reached zero in the run before the review's float64 rescoring. No single feature
   is shown to matter (the ablation's intervals all reach zero on 1,207 selection users).
-- Serving (day 4) knows only the prepared users: the store is keyed by the model's dense user index, so a new
-  MovieLens id is a 404, although the user tower itself works for any history.
+- New users (day 5) are registered by any event for an id the model doesn't know, without authentication or a bound:
+  a client can register as many ids as it sends events for. A real service would register users through its own
+  account system.
+- The popularity fallback for users with no positives isn't shown to beat the untrained empty-history vector on
+  held-out users (-0.0043 NDCG@10, interval [-0.0092, +0.0007]); it is chosen because that vector was never trained.
+  The popular list is up to `popular_ttl` (1 s) behind the events.
+- The cold-start measurement holds users out of the two-tower model but not of the ranker (trained on every user's
+  lists), so it measures retrieval order, not the full served list, for new users.
 - One uvicorn process: its thread pool's requests take turns on the GIL, so throughput tops out near one core's worth
   (about 1,100 requests/s here) and latency grows with concurrency; more cores need more processes. Client and server
   shared one laptop in every measurement.
@@ -798,13 +930,14 @@ src/signalrec/
   leakage_twotower.py      ... and what it is worth to the two-tower model
   retrieval.py    FAISS indexes (exact, HNSW, IVF) with the user's movies excluded in the search
   features.py     offline features (recent positives, seen set, genre and year counts, popularity), event replay order
-  featurestore.py the same features in Redis: a Lua script per event, snapshot reads
+  featurestore.py the same features in Redis: a Lua script per event, snapshot reads, the registry of new users
   ranking.py      the ranker's features, model, listwise training and NumPy export
   experiment_ranking.py    retrieve -> rank by the protocol, and the post-hoc feature ablation
   recommend.py    one user's recommendations by title
   tower.py        the user tower in NumPy, and the model files serving reads (hash-checked)
   export.py       the served model (two-tower on training + validation + the chosen ranker); loading the store
-  serving.py      the request path: features → user tower → retrieval → popularity → ranker → filter, timed
+  serving.py      the request path: features → user tower → retrieval → popularity → ranker → filter, timed;
+                  the popular list for users with no positives
   api.py          FastAPI: GET /recommendations/{user}, POST /events, /health
   abtest.py       hash assignment, the synthetic click model, two-proportion statistics, power, the simulator
   synthetic.py    a synthetic dataset for tests and CI
@@ -819,9 +952,12 @@ scripts/bench_featurestore.py  replay throughput, one user's read latency, the s
 scripts/serving_check.py     every user through the request path against ranking.json's test metrics
 scripts/bench_serving.py     per-stage latency in-process; HTTP closed loop and open loop at fixed rates
 scripts/ab_simulate.py       a simulated A/B test of the ranker: lift, power analysis, the statistics checked
+scripts/cold_start.py        users held out of training, replayed with 0-3 positives: two-tower vs popularity
+scripts/bench_new_users.py   the new-user path's latency, popular list read every time vs kept for a second
 results/<dataset>/{baselines,leakage,twotower,twotower-day2,leakage-twotower,ranking}.json,
 results/ml-1m/{recency-ablation,same-second,retrieval,featurestore}.json,
-results/ml-1m/{serving-check,serving-bench,abtest}.json
+results/ml-1m/{serving-check,serving-bench,abtest}.json,
+results/ml-1m/{cold-start,new-users-bench}.json
 ```
 
 ## License

@@ -32,7 +32,7 @@ data:
 # 3's grid (history length crossed with temperature, about 30 minutes), the ranker on its candidates, and the retrieval
 # and feature-store benchmarks (take those on a quiet machine; the feature store needs Redis on 6383).
 DAY2_GRID := 0.05:on,0.05:off,0.1:on,0.1:off,0.2:on,0.2:off
-# Day 5: new users (cold_start.py: 20% of users held out of training, about 15 s; bench_new_users.py, about 20 s, on
+# Day 5: new users (cold_start.py: 20% of users held out of training, about 15 s; bench_new_users.py, about 12 s, on
 # a quiet machine, with the store loaded).
 # Day 4: the served model, the store (Redis on 6383), the serving check, the latency benchmark (about 3 minutes, on a
 # quiet machine) and the A/B simulation.
